@@ -5,7 +5,7 @@ from logger_utils import setup_logger
 import sys
 import os
 
-WAYMO_DATA_DIR = r"/home/huangfukk/MAGAIL4AutoDrive/Env"
+WAYMO_DATA_DIR = r"/home/huangfukk/mdsn"
 
 def main(enable_logging=False, log_file=None):
     """
@@ -18,7 +18,7 @@ def main(enable_logging=False, log_file=None):
     env = MultiAgentScenarioEnv(
         config={
             # "data_directory": AssetLoader.file_path(AssetLoader.asset_path, "waymo", unix_style=False),
-            "data_directory": AssetLoader.file_path(WAYMO_DATA_DIR, "exp_converted", unix_style=False),
+            "data_directory": AssetLoader.file_path(WAYMO_DATA_DIR, "exp_filtered", unix_style=False),
             "is_multi_agent": True,
             "num_controlled_agents": 3,
             "horizon": 300,
@@ -30,9 +30,12 @@ def main(enable_logging=False, log_file=None):
             # 车道检测与过滤配置
             "filter_offroad_vehicles": True,  # 启用车道区域过滤，过滤草坪等非车道区域的车辆
             "lane_tolerance": 3.0,  # 车道检测容差（米），可根据需要调整
-            "max_controlled_vehicles": 2,  # 限制最大车辆数（可选，None表示不限制）
-            "debug_lane_filter": True,
-            "debug_traffic_light": True,
+            "max_controlled_vehicles": None,  # 限制最大车辆数（可选，None表示不限制）
+            
+            # 调试配置（可选）
+            # "debug_lane_filter": True,  # 启用车道过滤详细调试
+            # "verbose_reset": True,  # 启用重置详细统计
+            # "inherit_expert_velocity": True,  # 继承专家速度
         },
         agent2policy=ConstantVelocityPolicy(target_speed=50)
     )
