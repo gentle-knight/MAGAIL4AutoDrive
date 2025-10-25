@@ -1,85 +1,275 @@
 # MAGAIL4AutoDrive
-### 1.1 环境搭建
-环境核心代码封装于`Env`文件夹，通过运行`run_multiagent_env.py`即可启动多智能体交互环境，该脚本的核心功能为读取各智能体（车辆）的动作指令，并将其传入`env.step()`方法中完成仿真执行。
 
-**性能优化版本：** 针对原始版本FPS低（15帧）和CPU利用率不足的问题，已提供多个优化版本：
-- `run_multiagent_env_fast.py` - 激光雷达优化版（30-60 FPS，2-4倍提升）⭐推荐
-- `run_multiagent_env_parallel.py` - 多进程并行版（300-600 steps/s总吞吐量，充分利用多核CPU）⭐⭐推荐
-- 详见 `Env/QUICK_START.md` 快速使用指南
+> 基于多智能体生成对抗模仿学习(MAGAIL)的自动驾驶训练系统 | MetaDrive + Waymo Open Motion Dataset
 
-当前已初步实现`Env.senario_env.MultiAgentScenarioEnv.reset()`车辆生成函数，具体逻辑如下：首先读取专家数据集中各车辆的初始位姿信息；随后对原始数据进行清洗，剔除车辆 Agent 实例信息，记录核心参数（车辆 ID、初始生成位置、朝向角、生成时间戳、目标终点坐标）；最后调用`_spawn_controlled_agents()`函数，依据清洗后的参数在指定时间、指定位置生成搭载自动驾驶算法的可控车辆。
+[![MetaDrive](https://img.shields [![Python](https://img.shields.io/io/badge/Dataset目实现了适配多智能体场景的GAIL算法训练系统,核心创新在于**改进判别器架构支持动态车辆数量**,利用Transformer处理1-100+辆车的交互场景。
 
-**✅ 已解决：车辆生成位置偏差问题**
-- **问题描述**：部分车辆生成于草坪、停车场等非车道区域，原因是专家数据记录误差或停车场特殊标注
-- **解决方案**：实现了`_is_position_on_lane()`车道区域检测机制和`_filter_valid_spawn_positions()`过滤函数
-  - 检测逻辑：通过`point_on_lane()`判断位置是否在车道上，支持容差参数（默认3米）处理边界情况
-  - 双重检测：优先使用精确检测，失败时使用容差范围检测，确保车道边缘车辆不被误过滤
-  - 自动过滤：在`reset()`时自动过滤非车道区域车辆，并输出过滤统计信息
-- **配置参数**：
-  - `filter_offroad_vehicles=True`：启用/禁用车道过滤功能
-  - `lane_tolerance=3.0`：车道检测容差（米），可根据场景调整
-  - `max_controlled_vehicles=10`：限制最大车辆数（可选）
-- **使用示例**：在环境配置中设置上述参数即可自动启用，运行时会显示过滤信息（如"过滤5辆，保留45辆"）
+**核心特性:**
+- ✅ 完整的Waymo数据处理pipeline(12,201个场景)
+- ✅ 车道过滤和红绿灯检测优化
+- ✅ 支持5维简化/107维完整观测空间
+- ✅ 专家轨迹数据集(52K+训练样本)
+- 🚧 MAGAIL算法实现(判别器+策略网络)
 
+***
 
-### 1.2 观测获取
-观测信息采集功能通过`Env.senario_env.MultiAgentScenarioEnv._get_all_obs()`函数实现，该函数支持遍历所有可控车辆并采集多维度观测数据，当前已实现的观测维度包括：车辆实时位置坐标、朝向角、行驶速度、雷达扫描点云（含障碍物与车道线特征）、导航信息（因场景复杂度较低，暂采用目标终点坐标直接作为导航输入）。
+## 🚀 快速开始
 
-**✅ 已解决：红绿灯信息采集问题**
-- **问题描述**：
-  - 问题1：部分红绿灯状态值为`None`，导致异常或错误判断
-  - 问题2：车道分段设计时，部分区域车辆无法匹配到红绿灯
-- **解决方案**：实现了`_get_traffic_light_state()`优化方法，采用多级检测策略
-  - **方法1（优先）**：从车辆导航模块`vehicle.navigation.current_lane`获取当前车道，直接查询红绿灯状态（高效，自动处理车道分段）
-  - **方法2（兜底）**：遍历所有车道，通过`point_on_lane()`判断车辆位置，查找对应红绿灯（处理导航失败情况）
-  - **异常处理**：对状态为`None`的情况返回0（无红绿灯），所有异常均有try-except保护，确保不会中断程序
-  - **返回值规范**：0=无红绿灯/未知, 1=绿灯, 2=黄灯, 3=红灯
-- **优势**：双重保障机制，优先用高效方法，失败时自动切换到兜底方案，确保所有场景都能正确获取红绿灯信息
+### 环境安装
 
-
-### 1.3 算法模块
-本方案的核心创新点在于对 GAIL 算法的判别器进行改进，使其适配多智能体场景下 “输入长度动态变化”（车辆数量不固定）的特性，实现对整体交互场景的分类判断，进而满足多智能体自动驾驶环境的训练需求。算法核心代码封装于`Algorithm.bert.Bert`类，具体实现逻辑如下：
-
-1. 输入层处理：输入数据为维度`(N, input_dim)`的矩阵（其中`N`为当前场景车辆数量，`input_dim`为单车辆固定观测维度），初始化`Bert`类时需设置`input_dim`，确保输入维度匹配；
-2. 嵌入层与位置编码：通过`projection`线性投影层将单车辆观测维度映射至预设的嵌入维度（`embed_dim`），随后叠加可学习的位置编码（`pos_embed`），以捕捉观测序列的时序与空间关联信息；
-3. Transformer 特征提取：嵌入后的特征向量输入至多层`Transformer`网络（层数由`num_layers`参数控制），完成高阶特征交互与抽象；
-4. 分类头设计：提供两种特征聚合与分类方案：若开启`CLS`模式，在嵌入层前拼接 1 个可学习的`CLS`标记，最终取`CLS`标记对应的特征向量输入全连接层完成分类；若关闭`CLS`模式，则对`Transformer`输出的所有车辆特征向量进行序列维度均值池化，再将池化后的全局特征输入全连接层。分类器支持可选的`Tanh`激活函数，以适配不同场景下的输出分布需求。
-
-
-### 1.4 动作执行
-在当前环境测试阶段，暂沿用腾达的动作执行框架：为每辆可控车辆分配独立的`policy`模型，将单车辆观测数据输入对应`policy`得到动作指令后，传入`env.step()`完成仿真；同时在`before_step`阶段调用`_set_action()`函数，将动作指令绑定至车辆实例，最终由 MetaDrive 仿真系统完成物理动力学计算与场景渲染。
-
-后续优化方向为构建 "参数共享式统一模型框架"，具体设计如下：所有车辆共用 1 个`policy`模型，通过参数共享机制实现模型的全局统一维护。该框架具备三重优势：一是避免多车辆独立模型带来的训练偏差（如不同模型训练程度不一致）；二是解决车辆数量动态变化时的模型管理问题（车辆新增无需额外初始化模型，车辆减少不丢失模型训练信息）；三是支持动作指令的并行计算，可显著提升每一步决策的迭代效率，适配大规模多智能体交互场景的训练需求。
-
----
-
-## 问题解决总结
-
-### ✅ 已完成的优化
-
-1. **车辆生成位置偏差** - 实现车道区域检测和自动过滤，配置参数：`filter_offroad_vehicles`, `lane_tolerance`, `max_controlled_vehicles`
-2. **红绿灯信息采集** - 采用双重检测策略（导航模块+遍历兜底），处理None状态和车道分段问题
-3. **性能优化** - 提供多个优化版本（fast/parallel），FPS从15提升到30-60，支持多进程充分利用CPU
-
-### 🧪 测试方法
 ```bash
-# 测试车道过滤和红绿灯检测
-python Env/test_lane_filter.py
+# 克隆项目
+git clone <repository_url>
+cd MAGAIL4AutoDrive
 
-# 运行标准版本（带过滤）
+# 安装依赖
+pip install metadrive-simulator==0.4.3 torch numpy matplotlib scenarionet
+
+# 创建必需目录
+mkdir -p analysis_results
+touch scripts/__init__.py dataset/__init__.py Algorithm/__init__.py
+```
+
+### 数据准备
+
+```bash
+# 1. 转换Waymo数据
+python -m scenarionet.convert_waymo -d ~/mdsn/exp_converted --raw_data_path /path/to/waymo --num_files=150
+
+# 2. 筛选场景(无红绿灯)
+python -m scenarionet.filter --database_path ~/mdsn/exp_filtered --from ~/mdsn/exp_converted --no_traffic_light
+
+# 3. 验证数据集
+python scripts/check_database_info.py
+```
+
+### 运行环境
+
+```bash
+# 测试多智能体环境
 python Env/run_multiagent_env.py
 
-# 运行高性能版本
-python Env/run_multiagent_env_fast.py
+# 收集专家数据(10个场景测试)
+python dataset/expert_dataset.py
 ```
 
-### 📝 配置示例
+***
+
+## 📁 项目结构
+
+```
+MAGAIL4AutoDrive/
+├── Env/                      # 仿真环境模块
+│   ├── scenario_env.py       # 多智能体场景环境(含轨迹存储)
+│   ├── run_multiagent_env.py# 环境运行脚本
+│   └── simple_idm_policy.py  # 测试策略
+│
+├── dataset/                  # 数据集模块
+│   └── expert_dataset.py     # PyTorch Dataset(5维观测)
+│
+├── scripts/                  # 工具脚本
+│   ├── check_track_fields.py      # 数据字段验证
+│   ├── check_database_info.py     # 数据库信息检查
+│   ├── analyze_expert_data.py     # 统计分析
+│   └── visualize_expert_trajectory.py # 轨迹可视化
+│
+├── Algorithm/                # MAGAIL算法(待完善)
+│   ├── bert.py              # Transformer判别器
+│   ├── disc.py              # 判别器网络
+│   ├── policy.py            # 策略网络
+│   ├── ppo.py               # PPO优化器
+│   └── magail.py            # MAGAIL训练循环
+│
+└── analysis_results/         # 分析输出
+    ├── statistics.pkl        # 数据统计
+    └── distributions.png     # 可视化图表
+```
+
+***
+
+## 🎯 核心功能
+
+### 1. 环境与数据处理
+
+**scenario_env.py** - 多智能体场景环境
+- 专家轨迹完整存储(位置、速度、航向角、车辆尺寸)
+- 车道区域过滤(自动移除非车道车辆)
+- 红绿灯状态检测(双重保障机制)
+- 107维完整观测空间(激光雷达+车道线)
+
+**expert_dataset.py** - 专家数据集
+- 状态-动作对提取(逆动力学)
+- 批量采样和序列化
+- 支持PyTorch DataLoader
+
+### 2. 数据分析工具
+
+| 脚本 | 功能 | 输出 |
+|------|------|------|
+| `check_database_info.py` | 验证数据库完整性 | 场景总数、映射关系 |
+| `check_track_fields.py` | 检查可用字段 | 必需/可选字段列表 |
+| `analyze_expert_data.py` | 统计分析 | 轨迹长度、速度、交互频率 |
+| `visualize_expert_trajectory.py` | 轨迹可视化 | 动画展示车辆运动 |
+
+### 3. MAGAIL算法
+
+**判别器** (Algorithm/bert.py + disc.py)
+- Transformer编码器处理动态车辆数量
+- CLS标记或均值池化聚合特征
+- 支持集中式/去中心化/零和模式
+
+**策略网络** (Algorithm/policy.py + ppo.py)
+- Actor-Critic架构
+- 参数共享机制(所有车辆共享模型)
+- PPO/TRPO优化器
+
+***
+
+## ⚙️ 配置说明
+
 ```python
+# 环境配置
 config = {
+    # 数据路径
+    "data_directory": "~/mdsn/exp_filtered",
+    
+    # 多智能体设置
+    "num_controlled_agents": 3,     # 初始车辆数
+    "max_controlled_vehicles": 10,  # 最大车辆数限制
+    
     # 车道过滤
-    "filter_offroad_vehicles": True,  # 启用车道过滤
-    "lane_tolerance": 3.0,  # 容差范围（米）
-    "max_controlled_vehicles": 10,  # 最大车辆数
-    # 其他配置...
+    "filter_offroad_vehicles": True, # 启用车道过滤
+    "lane_tolerance": 3.0,           # 容差(米)
+    
+    # 场景加载
+    "sequential_seed": True,         # 顺序加载场景
+    "horizon": 1000,                 # 最大步数
 }
 ```
+
+***
+
+## 📊 数据集统计
+
+**当前数据规模**(基于exp_filtered):
+- 场景总数: **12,201**
+- 已收集场景: 10个测试场景
+- 轨迹数: 900条
+- 训练样本: **52,065**个(s,a)对
+- 观测维度: 5维(简化) / 107维(完整)
+- 动作维度: 2维(油门/刹车, 转向)
+
+**数据质量**:
+- 静止车辆占比: 54.8%(正常,包含停车场和路边停车)
+- 平均轨迹长度: 67帧(6.7秒 @ 10Hz)
+- 平均速度: 1.46 m/s
+- 近距离交互(<5m): 1.92%
+
+***
+
+## 🛠️ 使用示例
+
+### 收集专家数据
+
+```python
+# dataset/expert_dataset.py
+from expert_dataset import ExpertTrajectoryDataset
+
+# 收集1000个场景
+trajectories = ExpertTrajectoryDataset.collect_from_env(
+    env_config,
+    num_scenarios=1000,
+    save_path="./expert_trajectories.pkl"
+)
+
+# 创建数据集
+dataset = ExpertTrajectoryDataset(trajectories, sequence_length=1)
+```
+
+### 环境测试
+
+```python
+from scenario_env import MultiAgentScenarioEnv
+
+env = MultiAgentScenarioEnv(
+    config=config,
+    agent2policy=your_policy
+)
+
+obs = env.reset()
+for step in range(1000):
+    actions = {aid: policy(obs[aid]) for aid in env.controlled_agents}
+    obs, rewards, dones, infos = env.step(actions)
+```
+
+***
+
+## ❓ 常见问题
+
+### Q1: KeyError: 'bbox'
+**原因**: Waymo转换数据不含bbox字段  
+**解决**: 使用length/width/height,代码已添加条件检查
+
+### Q2: ModuleNotFoundError: scenario_env
+**原因**: Python路径问题  
+**解决**: 脚本开头添加:
+```python
+import sys, os
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../Env"))
+```
+
+### Q3: 多次reset失败(clear_objects错误)
+**原因**: MetaDrive对象管理bug  
+**解决**: 每次收集数据都重新创建环境(已实现)
+
+### Q4: 静止车辆占比过高
+**原因**: Waymo真实场景包含停车场等静止车辆  
+**解决**: 可在数据收集时过滤平均速度<2m/s的轨迹
+
+***
+
+## 📈 开发路线图
+
+### ✅ 已完成(Phase 1)
+- [x] 数据转换与筛选
+- [x] 完整轨迹存储
+- [x] 数据质量分析
+- [x] PyTorch Dataset构建
+
+### 🚧 进行中(Phase 2)
+- [ ] 107维完整观测空间
+- [ ] 数据质量过滤
+- [ ] 轨迹可视化工具
+
+### 📅 计划中(Phase 3-4)
+- [ ] 判别器网络实现
+- [ ] Actor-Critic策略网络
+- [ ] MAGAIL训练循环
+- [ ] TensorBoard监控
+- [ ] 实验与评估
+
+***
+
+## 📚 参考资料
+
+- [MetaDrive Documentation](https://metadrive-simulator.readthedocs.io/)
+- [Waymo Open Dataset](https://waymo.com/open/)
+- [MAGAIL Paper](https://arxiv.org/abs/1807.09936)
+- [ScenarioNet](https://github.com/metadriverse/scenarionet)
+
+## 📄 License
+
+MIT License
+
+***
+
+**💡 提示**: 项目处于活跃开发中,欢迎提Issue或PR贡献代码!
+
+[1](https://blog.csdn.net/BxuqBlockchain/article/details/133606934)
+[2](https://blog.csdn.net/sinat_28461591/article/details/148351123)
+[3](https://www.reddit.com/r/Python/comments/13kpoti/readmeai_autogenerate_readmemd_files/)
+[4](https://www.reddit.com/r/learnprogramming/comments/1298ix8/what_does_a_good_readme_look_like_for_personal/)
+[5](https://juejin.cn/post/7195763127883169853)
+[6](https://jimmysong.io/trans/spec-driven-development-using-markdown/)
+[7](https://www.showapi.com/news/article/66b602964ddd79f11a001e3c)
+[8](https://learn.microsoft.com/zh-cn/nuget/nuget-org/package-readme-on-nuget-org)
