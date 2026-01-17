@@ -247,7 +247,7 @@ class ExpertDataAnalyzer:
         print(f"  ✓ 分布图已保存")
 
 if __name__ == "__main__":
-    WAYMO_DATA_DIR = r"/home/huangfukk/mdsn"
+    WAYMO_DATA_DIR = r"/home/huangfukk/MAGAIL4AutoDrive/data"
     data_dir = AssetLoader.file_path(WAYMO_DATA_DIR, "exp_filtered", unix_style=False)
     
     print("开始分析专家数据...")
