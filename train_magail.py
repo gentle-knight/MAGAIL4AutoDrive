@@ -79,18 +79,30 @@ class PPO:
         self.K_epochs = K_epochs
         self.mse_loss = nn.MSELoss()
 
+    def _log_prob_from_dist(self, dist, pre_tanh_action):
+        # Tanh-squashed Gaussian log-prob with correction term.
+        log_prob = dist.log_prob(pre_tanh_action)
+        correction = torch.log(1 - torch.tanh(pre_tanh_action) ** 2 + 1e-6)
+        return (log_prob - correction).sum(dim=-1)
+
     def select_action(self, state):
         with torch.no_grad():
             state = torch.FloatTensor(state).cuda()
             dist = self.actor(state)
-            action = dist.sample()
-            action_logprob = dist.log_prob(action).sum(dim=-1)
-        return action.cpu().numpy(), action_logprob.cpu().numpy()
+            pre_tanh_action = dist.sample()
+            action = torch.tanh(pre_tanh_action)
+            action_logprob = self._log_prob_from_dist(dist, pre_tanh_action)
+        return (
+            action.cpu().numpy(),
+            action_logprob.cpu().numpy(),
+            pre_tanh_action.cpu().numpy()
+        )
 
     def update(self, memory):
         # Convert memory to tensors
         states = torch.FloatTensor(np.array(memory['states'])).cuda()
         actions = torch.FloatTensor(np.array(memory['actions'])).cuda()
+        pre_tanh_actions = torch.FloatTensor(np.array(memory['pre_tanh_actions'])).cuda()
         logprobs = torch.FloatTensor(np.array(memory['logprobs'])).cuda()
         rewards = torch.FloatTensor(np.array(memory['rewards'])).cuda()
         next_states = torch.FloatTensor(np.array(memory['next_states'])).cuda()
@@ -124,7 +136,7 @@ class PPO:
         for _ in range(self.K_epochs):
             # Evaluating old actions and values :
             dist = self.actor(states)
-            action_logprobs = dist.log_prob(actions).sum(dim=-1)
+            action_logprobs = self._log_prob_from_dist(dist, pre_tanh_actions)
             dist_entropy = dist.entropy().sum(dim=-1)
             state_values = self.critic(states).squeeze()
             
@@ -148,6 +160,49 @@ class PPO:
     def save(self, checkpoint_path):
         torch.save(self.actor.state_dict(), checkpoint_path + "_actor.pth")
         torch.save(self.critic.state_dict(), checkpoint_path + "_critic.pth")
+
+from Env.scenario_env import MultiAgentScenarioEnv
+
+class MAGAILScenarioEnv(MultiAgentScenarioEnv):
+    def _get_all_obs(self):
+        # Same logic as ExpertReplayEnv to ensure compatibility
+        obs_dict = {}
+        for agent_id, vehicle in self.controlled_agents.items():
+            # 1. Ego State
+            ego_state = [
+                vehicle.position[0], vehicle.position[1],
+                vehicle.velocity[0], vehicle.velocity[1],
+                vehicle.heading_theta
+            ]
+            
+            # 2. Neighbors
+            candidates = []
+            for other_id, other_vehicle in self.engine.agent_manager.active_agents.items():
+                if other_id == agent_id:
+                    continue
+                dist = np.linalg.norm(vehicle.position - other_vehicle.position)
+                if dist < 30.0:
+                    candidates.append((dist, other_vehicle))
+            
+            candidates.sort(key=lambda x: x[0])
+            top_10 = candidates[:10]
+            
+            neighbor_feats = []
+            for _, neighbor in top_10:
+                neighbor_feats.extend([
+                    neighbor.position[0] - vehicle.position[0], 
+                    neighbor.position[1] - vehicle.position[1],
+                    neighbor.velocity[0], 
+                    neighbor.velocity[1]
+                ])
+                
+            missing = 10 - len(top_10)
+            if missing > 0:
+                neighbor_feats.extend([0.0] * (4 * missing))
+                
+            obs = np.array(ego_state + neighbor_feats, dtype=np.float32)
+            obs_dict[agent_id] = obs
+        return obs_dict
 
 # --- Training Loop ---
 
@@ -220,47 +275,47 @@ def train(args):
     # We need to inject that same logic into the training env, OR
     # subclass MultiAgentScenarioEnv in the training script to override observation.
     
-    class MAGAILScenarioEnv(MultiAgentScenarioEnv):
-        def _get_all_obs(self):
-            # Same logic as ExpertReplayEnv to ensure compatibility
-            obs_dict = {}
-            for agent_id, vehicle in self.controlled_agents.items():
-                # 1. Ego State
-                ego_state = [
-                    vehicle.position[0], vehicle.position[1],
-                    vehicle.velocity[0], vehicle.velocity[1],
-                    vehicle.heading_theta
-                ]
-                
-                # 2. Neighbors
-                candidates = []
-                for other_id, other_vehicle in self.engine.agent_manager.active_agents.items():
-                    if other_id == agent_id:
-                        continue
-                    dist = np.linalg.norm(vehicle.position - other_vehicle.position)
-                    if dist < 30.0:
-                        candidates.append((dist, other_vehicle))
-                
-                candidates.sort(key=lambda x: x[0])
-                top_10 = candidates[:10]
-                
-                neighbor_feats = []
-                for _, neighbor in top_10:
-                    neighbor_feats.extend([
-                        neighbor.position[0] - vehicle.position[0], 
-                        neighbor.position[1] - vehicle.position[1],
-                        neighbor.velocity[0], 
-                        neighbor.velocity[1]
-                    ])
-                    
-                missing = 10 - len(top_10)
-                if missing > 0:
-                    neighbor_feats.extend([0.0] * (4 * missing))
-                    
-                obs = np.array(ego_state + neighbor_feats, dtype=np.float32)
-                obs_dict[agent_id] = obs
-            return obs_dict
-
+    # class MAGAILScenarioEnv(MultiAgentScenarioEnv):
+    #     def _get_all_obs(self):
+    #         # Same logic as ExpertReplayEnv to ensure compatibility
+    #         obs_dict = {}
+    #         for agent_id, vehicle in self.controlled_agents.items():
+    #             # 1. Ego State
+    #             ego_state = [
+    #                 vehicle.position[0], vehicle.position[1],
+    #                 vehicle.velocity[0], vehicle.velocity[1],
+    #                 vehicle.heading_theta
+    #             ]
+    #             
+    #             # 2. Neighbors
+    #             candidates = []
+    #             for other_id, other_vehicle in self.engine.agent_manager.active_agents.items():
+    #                 if other_id == agent_id:
+    #                     continue
+    #                 dist = np.linalg.norm(vehicle.position - other_vehicle.position)
+    #                 if dist < 30.0:
+    #                     candidates.append((dist, other_vehicle))
+    #             
+    #             candidates.sort(key=lambda x: x[0])
+    #             top_10 = candidates[:10]
+    #             
+    #             neighbor_feats = []
+    #             for _, neighbor in top_10:
+    #                 neighbor_feats.extend([
+    #                     neighbor.position[0] - vehicle.position[0], 
+    #                     neighbor.position[1] - vehicle.position[1],
+    #                     neighbor.velocity[0], 
+    #                     neighbor.velocity[1]
+    #                 ])
+    #                 
+    #             missing = 10 - len(top_10)
+    #             if missing > 0:
+    #                 neighbor_feats.extend([0.0] * (4 * missing))
+    #                 
+    #             obs = np.array(ego_state + neighbor_feats, dtype=np.float32)
+    #             obs_dict[agent_id] = obs
+    #         return obs_dict
+    
     env = MAGAILScenarioEnv(config=env_config, agent2policy={}) # Pass empty dict if we control all externally
     
     print("Starting training...")
@@ -277,7 +332,15 @@ def train(args):
     
     for i_episode in range(args.max_episodes):
         # --- 1. Collect Rollouts (Interaction) ---
-        memory = {'states': [], 'actions': [], 'logprobs': [], 'rewards': [], 'next_states': [], 'dones': []}
+        memory = {
+            'states': [],
+            'actions': [],
+            'pre_tanh_actions': [],
+            'logprobs': [],
+            'rewards': [],
+            'next_states': [],
+            'dones': []
+        }
         
         # Prepare seed
         available_scenarios = env.config["num_scenarios"]
@@ -349,6 +412,7 @@ def train(args):
             # Select actions for all agents
             actions = {}
             action_logprobs = {}
+            pre_tanh_actions = {}
             
             # obs_dict: {agent_id: obs}
             # MultiAgentScenarioEnv usually returns a dict {agent_id: obs}
@@ -386,9 +450,10 @@ def train(args):
                 obs_dict = new_obs_dict
 
             for agent_id, obs in obs_dict.items():
-                act, logprob = ppo_agent.select_action(obs) # Select action returns numpy
+                act, logprob, pre_tanh = ppo_agent.select_action(obs) # Select action returns numpy
                 actions[agent_id] = act.flatten() # (2,)
                 action_logprobs[agent_id] = logprob # scalar
+                pre_tanh_actions[agent_id] = pre_tanh.flatten()
                 
             # Step Env
             next_obs_dict, rewards, dones, infos = env.step(actions)
@@ -398,6 +463,7 @@ def train(args):
                 if agent_id in actions:
                     memory['states'].append(obs)
                     memory['actions'].append(actions[agent_id])
+                    memory['pre_tanh_actions'].append(pre_tanh_actions[agent_id])
                     memory['logprobs'].append(action_logprobs[agent_id])
                     
                     # Store standard environmental reward for logging (not used for update in GAIL)
@@ -407,7 +473,7 @@ def train(args):
                     # Next state
                     if agent_id in next_obs_dict:
                         memory['next_states'].append(next_obs_dict[agent_id])
-                        memory['dones'].append(False)
+                        memory['dones'].append(dones.get("__all__", False))
                     else:
                         # Agent finished/vanished
                         # We need a dummy next state or handle done correctly
@@ -460,6 +526,10 @@ def train(args):
             disc_loss = exp_loss + pol_loss
             disc_loss.backward()
             disc_optimizer.step()
+
+            with torch.no_grad():
+                disc_acc_exp = (exp_preds > 0.5).float().mean().item()
+                disc_acc_pol = (pol_preds < 0.5).float().mean().item()
             
             # --- 3. Update Policy with GAIL Rewards ---
             # Reward = -log(1 - D(s, a))
@@ -494,6 +564,13 @@ def train(args):
             writer.add_scalar('Loss/Discriminator', disc_loss.item(), i_episode)
             writer.add_scalar('Loss/Policy', ppo_loss, i_episode)
             writer.add_scalar('Reward/Mean_GAIL', np.mean(all_gail_rewards), i_episode)
+            if batch_size > 0:
+                writer.add_scalar('Acc/Disc_Expert', disc_acc_exp, i_episode)
+                writer.add_scalar('Acc/Disc_Policy', disc_acc_pol, i_episode)
+            if len(memory['actions']) > 0:
+                action_arr = np.array(memory['actions'])
+                action_clip_ratio = (np.abs(action_arr) > 0.98).mean()
+                writer.add_scalar('Policy/ActionClipRatio', action_clip_ratio, i_episode)
         
         print(f"Episode {i_episode}: Disc Loss {disc_loss.item():.4f} | PPO Loss {ppo_loss:.4f} | Mean Reward {np.mean(all_gail_rewards):.4f}")
         
