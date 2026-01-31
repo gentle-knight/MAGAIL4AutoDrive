@@ -34,9 +34,8 @@ class ExpertReplayEnv(MultiAgentScenarioEnv):
         self._reset_global_seed(seed)
         if self.engine is None:
             raise ValueError("Broken MetaDrive instance.")
-            
-        self.background_vehicles = {} # Vehicles that exist but are static/background
         
+            
         # Helper function to check if a position is on a valid lane
         def is_on_lane(pos, map_manager, threshold=2.0):
             # Check if point is close to any lane in the road network
@@ -64,26 +63,83 @@ class ExpertReplayEnv(MultiAgentScenarioEnv):
             except:
                 return False
 
+        # CRITICAL: Clear all objects from previous scenario before reset
+        # This is required by MetaDrive to avoid "You should clear all generated objects" error
+        # Clear all objects if any exist
+        try:
+            objects_to_clear = list(self.engine.get_objects().keys())
+            if objects_to_clear:
+                self.engine.clear_objects(objects_to_clear)
+            # Keep manager state consistent with engine object cleanup
+            if hasattr(self.engine, "managers"):
+                for manager in self.engine.managers.values():
+                    if hasattr(manager, "spawned_objects"):
+                        manager.spawned_objects.clear()
+        except Exception as e:
+            # If clear_objects fails, log and continue to avoid blocking reset
+            self.logger.warning(f"Failed to clear objects: {e}.")
+        
+        # Also clear controlled_agents and active_agents dictionaries
+        self.controlled_agents.clear()
+        self.controlled_agent_ids.clear()
+        
+        self.engine.reset()
+        self.reset_sensors()
+        self.engine.taskMgr.step()
+
+        self.lanes = self.engine.map_manager.current_map.road_network.graph
+        
         # --- MODIFIED SECTION START ---
-        # Capture expert tracks before they are cleaned
+        # Snapshot scenario data AFTER engine.reset() so we get the correct scenario.
+        traffic_data_snapshot = dict(self.engine.traffic_manager.current_traffic_data)
+        sdc_sid = self.engine.traffic_manager.sdc_scenario_id
+        # Store scenario id/index for debugging/visualization
+        self.current_scenario_id = None
+        self.current_scenario_index = None
+        try:
+            tm = getattr(self.engine, "traffic_manager", None)
+            # Prefer traffic_manager-provided identifiers if available
+            for attr in ("current_scenario_id", "scenario_id", "current_scenario"):
+                if tm is not None and getattr(tm, attr, None) is not None:
+                    self.current_scenario_id = getattr(tm, attr)
+                    break
+            for attr in ("scenario_index", "current_scenario_index", "_scenario_index"):
+                if tm is not None and getattr(tm, attr, None) is not None:
+                    self.current_scenario_index = getattr(tm, attr)
+                    break
+            # Fallback: try track metadata
+            if self.current_scenario_id is None and traffic_data_snapshot:
+                any_track = next(iter(traffic_data_snapshot.values()))
+                metadata = any_track.get("metadata") or any_track.get("meta_data") or {}
+                self.current_scenario_id = metadata.get("scenario_id") or metadata.get("id")
+        except Exception:
+            self.current_scenario_id = None
+            self.current_scenario_index = None
+        # Remove traffic vehicles spawned by MetaDrive to avoid overlap with replay.
+        traffic_manager = getattr(self.engine, "traffic_manager", None)
+        if traffic_manager is not None and hasattr(traffic_manager, "spawned_objects"):
+            traffic_object_ids = list(traffic_manager.spawned_objects.keys())
+            if traffic_object_ids:
+                self.engine.clear_objects(traffic_object_ids)
+            traffic_manager.spawned_objects.clear()
+        
         self.expert_tracks = {}
+        self.background_vehicles = {} # Vehicles that exist but are static/background
         # Capture SDC track for ego replay (MetaDrive default agent)
         self.sdc_track = None
         self.sdc_vehicle = None
         if self.replay_sdc and hasattr(self.engine, "traffic_manager"):
-            sdc_sid = self.engine.traffic_manager.sdc_scenario_id
-            self.sdc_track = self.engine.traffic_manager.current_traffic_data.get(sdc_sid, None)
+            self.sdc_track = traffic_data_snapshot.get(sdc_sid, None)
         _obj_to_clean_this_frame = []
         self.car_birth_info_list = []
         
         # Pre-filter: Check tracks against map AND check for static vehicles
         
-        for scenario_id, track in self.engine.traffic_manager.current_traffic_data.items():
-            if scenario_id == self.engine.traffic_manager.sdc_scenario_id:
+        for scenario_id, track in traffic_data_snapshot.items():
+            if scenario_id == sdc_sid:
                 continue
             else:
                 if track["type"] == MetaDriveType.VEHICLE:
-                    _obj_to_clean_this_frame.append(scenario_id)
                     
                     valid = track['state']['valid']
                     if not valid.any():
@@ -125,13 +181,14 @@ class ExpertReplayEnv(MultiAgentScenarioEnv):
                     # - If on-road and moving: Spawn as CONTROLLED agent
                     
                     if not is_valid_track:
-                        # Skip off-road vehicles entirely (both static and moving off-road)
-                        continue
+                        # Lane check can be overly strict for some datasets/maps.
+                        # Keep the track instead of skipping it.
+                        is_valid_track = True
                         
                     if is_static:
                         # Add to background list, but NOT to car_birth_info_list (which is for controlled agents)
                         # We need a way to spawn them. Let's add a separate list.
-                         self.background_vehicles[scenario_id] = {
+                        self.background_vehicles[scenario_id] = {
                             'id': track['metadata']['object_id'],
                             'show_time': first_show,
                             'begin': (track['state']['position'][first_show, 0], track['state']['position'][first_show, 1]),
@@ -142,7 +199,7 @@ class ExpertReplayEnv(MultiAgentScenarioEnv):
                             'width': track['state']['width'][first_show],
                             'valid': valid # Need validity to know when to show/hide
                         }
-                         continue # Do not add to controlled list
+                        continue # Do not add to controlled list
 
                     # Store the full track for replay (only for controlled agents)
                     self.expert_tracks[scenario_id] = track
@@ -157,16 +214,7 @@ class ExpertReplayEnv(MultiAgentScenarioEnv):
                         'length': track['state']['length'][first_show],
                         'width': track['state']['width'][first_show]
                     })
-
-        for scenario_id in _obj_to_clean_this_frame:
-            self.engine.traffic_manager.current_traffic_data.pop(scenario_id)
         # --- MODIFIED SECTION END ---
-
-        self.engine.reset()
-        self.reset_sensors()
-        self.engine.taskMgr.step()
-
-        self.lanes = self.engine.map_manager.current_map.road_network.graph
 
         if self.top_down_renderer is not None:
             self.top_down_renderer.clear()
@@ -175,10 +223,8 @@ class ExpertReplayEnv(MultiAgentScenarioEnv):
         self.dones = {}
         self.episode_rewards = defaultdict(float)
         self.episode_lengths = defaultdict(int)
-
-        self.controlled_agents.clear()
-        self.controlled_agent_ids.clear()
         
+        # Note: controlled_agents and controlled_agent_ids are already cleared before engine.reset()
         # We skip calling super().reset() to avoid double reset
         # But we need to ensure ScenarioEnv-specific setup is done if any.
         # ScenarioEnv.reset() basically does engine.reset() and some cleanup.
@@ -365,6 +411,7 @@ class ExpertReplayEnv(MultiAgentScenarioEnv):
         
         self.round += 1
         expert_actions = {}
+        expert_raw = {}
         
         # 1. Update state of all controlled agents to the current timestep (self.round)
         #    and compute action from (self.round-1) to (self.round).
@@ -390,8 +437,9 @@ class ExpertReplayEnv(MultiAgentScenarioEnv):
                     "heading": self.sdc_track["state"]["heading"][next_step],
                     "velocity": self.sdc_track["state"]["velocity"][next_step],
                 }
-                action, _ = self.inverse_dynamics.compute_action(curr_state, next_state, dt=0.1)
+                action, raw_info = self.inverse_dynamics.compute_action(curr_state, next_state, dt=0.1)
                 expert_actions[self.sdc_agent_id] = action
+                expert_raw[self.sdc_agent_id] = raw_info
                 self.sdc_vehicle.set_position(next_state["position"])
                 self.sdc_vehicle.set_heading_theta(next_state["heading"])
                 self.sdc_vehicle.set_velocity(next_state["velocity"])
@@ -439,6 +487,7 @@ class ExpertReplayEnv(MultiAgentScenarioEnv):
             # Calculate action
             action, raw_info = self.inverse_dynamics.compute_action(curr_state, next_state, dt=0.1) # Waymo is 10Hz?
             expert_actions[agent_id] = action
+            expert_raw[agent_id] = raw_info
             
             # Force update vehicle state
             vehicle.set_position(next_pos)
@@ -472,7 +521,13 @@ class ExpertReplayEnv(MultiAgentScenarioEnv):
         dones = {aid: False for aid in self.controlled_agents}
         dones["__all__"] = (self.round >= self.config["horizon"]) or (len(self.controlled_agents) == 0 and self.round > 190) # Waymo scenarios are usually ~198 steps (20s @ 10Hz) or 90 steps (9s)
         
-        infos = {aid: {"expert_action": expert_actions.get(aid, np.zeros(2))} for aid in self.controlled_agents}
+        infos = {
+            aid: {
+                "expert_action": expert_actions.get(aid, np.zeros(2)),
+                "expert_action_raw": expert_raw.get(aid)
+            }
+            for aid in self.controlled_agents
+        }
         
         return obs, rewards, dones, infos
 

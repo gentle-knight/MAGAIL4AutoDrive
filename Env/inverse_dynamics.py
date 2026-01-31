@@ -2,7 +2,7 @@ import numpy as np
 import math
 
 class InverseDynamics:
-    def __init__(self, max_steering=0.7, max_acc=15.0, length=4.5):
+    def __init__(self, max_steering=0.7, max_acc=6.0, length=4.5):
         """
         :param max_steering: Max steering angle in radians (approx 40 degrees)
         :param max_acc: Max acceleration in m/s^2
