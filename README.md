@@ -1,98 +1,96 @@
 # MAGAIL4AutoDrive
 
-> 基于多智能体生成对抗模仿学习(MAGAIL)的自动驾驶训练系统 | MetaDrive + Waymo Open Motion Dataset
+基于 **MetaDrive** 仿真器和 **Waymo Open Motion Dataset** 的自动驾驶多智能体模仿学习（MAGAIL）与行为克隆（BC）训练系统。
 
-本项目利用 Waymo 真实驾驶数据，通过 MetaDrive 仿真环境构建专家回放系统，提取车辆状态与动作，用于训练多智能体模仿学习算法 (MAGAIL)。
+本项目旨在从真实的 Waymo 驾驶数据中提取专家轨迹，并通过模仿学习（Imitation Learning）训练能够适应复杂交互场景的自动驾驶策略。
 
-## 📁 核心模块
+## 目录结构
 
-*   **`Env/expert_replay_env.py`**: 专家回放环境。核心类 `ExpertReplayEnv`，负责读取 Waymo 轨迹，计算逆动力学动作，并过滤非道路/静态车辆。
-*   **`Env/inverse_dynamics.py`**: 逆动力学模块。根据车辆位置和航向计算油门、刹车和转向动作。
-*   **`scripts/generate_expert_data.py`**: 数据收集脚本。批量运行场景并保存训练数据。
-*   **`scripts/visualize_replay.py`**: 可视化脚本。用于观察回放效果和数据质量。
-
-***
-
-## 🚀 1. 数据收集
-
-### 生成专家数据
-使用 `generate_expert_data.py` 脚本从 Waymo 数据集中批量提取 (State, Action) 对。
-
-```bash
-# 设置 Python 路径
-export PYTHONPATH=$PYTHONPATH:.:./metadrive
-
-# 运行生成脚本
-# --data_dir: Waymo 数据路径 (建议使用 exp_filtered)
-# --output_dir: 结果保存路径
-# --num_scenarios: 要处理的场景数量
-python scripts/generate_expert_data.py \
-    --data_dir data/exp_filtered \
-    --output_dir data/training_data \
-    --num_scenarios 100 \
-    --start_index 0
+```text
+MAGAIL4AutoDrive/
+├── Algorithm/                 # 强化学习与模仿学习算法实现
+│   ├── policy.py              # 基础策略网络 (MLP 等)
+│   ├── ppo.py                 # PPO 算法实现
+│   ├── magail.py              # MAGAIL 算法核心逻辑
+│   ├── disc.py                # 判别器 (Discriminator) 网络
+│   └── ...
+├── Env/                       # 仿真环境封装 (MetaDrive Wrapper)
+│   ├── bc_env.py              # BCScenarioEnv，45 维观测（BC/MAGAIL 共用）
+│   ├── scenario_env.py       # 多智能体基础场景环境
+│   ├── expert_replay_env.py  # 专家轨迹回放环境（数据生成与回放）
+│   ├── inverse_dynamics.py   # 逆动力学模块 (轨迹 -> 动作)
+│   ├── simple_idm_policy.py  # ConstantVelocityPolicy 占位策略
+│   └── ...
+├── dataset/                   # 数据集加载器
+│   ├── expert_dataset.py      # 通用专家数据加载类
+│   └── magail_dataset.py      # MAGAIL 训练专用数据加载器
+├── scripts/                   # 工具脚本（数据、回放、可视化、分析）
+│   ├── generate_expert_data.py    # 从 Waymo 生成专家 (obs, act) pkl
+│   ├── visualize_replay.py       # 原始专家数据回放
+│   ├── visualize_trained_policy.py # BC/MAGAIL 策略可视化统一入口
+│   ├── analyze_expert_data.py    # 数据分布分析
+│   ├── launch_tensorboard.py     # 启动 TensorBoard
+│   ├── README.md                  # 脚本用法说明
+│   └── ...
+├── data/                      # 数据目录（相对路径）
+│   ├── exp_filtered/          # Waymo 场景数据
+│   ├── training_data/        # 专家 pkl 输出（generate_expert_data）
+│   └── trajectories/         # 其他轨迹 pkl（如 expert_dataset 输出）
+├── models/                    # 模型保存目录（相对路径）
+│   ├── bc/                    # BC 模型 (.pt)
+│   └── magail/                # MAGAIL 模型 (*_actor.pth, *_critic.pth)
+├── logs/                      # 训练日志 (TensorBoard)
+│   ├── bc/
+│   └── magail/
+├── train_bc.py                # [根目录] BC 训练
+├── train_magail.py            # [根目录] MAGAIL 训练
+├── visualize_bc.py            # [根目录] BC 可视化薄包装 -> scripts/visualize_trained_policy.py
+└── README.md
 ```
 
-**生成的 `.pkl` 文件结构**：
-包含一个列表，每个元素是一条车辆轨迹（Trajectory Dictionary）：
-*   `obs`: `(T, 45)` - 观测矩阵。包含 Ego 状态 (5维) + 10辆邻居车相对信息 (40维)。
-*   `acts`: `(T, 2)` - 动作矩阵。`[Steering, Accel]`，归一化到 `[-1, 1]`。
-*   `agent_id`: 车辆 ID。
-*   `scenario_id`: 所属场景 ID。
+## 路径约定（相对项目根）
 
-**内置过滤器**：
-脚本会自动过滤掉以下无效车辆：
-1.  **非道路车辆**：始终在停车场或路外行驶的车辆。
-2.  **静态车辆**：全称移动距离小于 5米 且速度从未超过 1m/s 的车辆（作为背景流存在，不收集数据）。
+- **数据**：Waymo 场景 `data/exp_filtered`；专家 pkl `data/training_data`；其他轨迹 `data/trajectories`
+- **模型**：BC `models/bc/`，MAGAIL `models/magail/`
+- **日志**：TensorBoard 写入 `logs/bc/`、`logs/magail/`
 
----
+所有默认路径均为相对项目根，便于在不同设备上复用。
 
-## 🔍 2. 数据可视化与验证
+## 核心工作流
 
-### 回放可视化
-使用 `visualize_replay.py` 直观地观察回放效果，确认车辆行为是否自然，以及过滤逻辑是否生效。
+### 1. 数据准备
+使用 `scripts/generate_expert_data.py` 将 Waymo 数据转换为训练用 `.pkl`，输出到 `data/training_data/`。
 
 ```bash
-# 运行可视化
-# --horizon: 回放的最大步数 (Waymo 场景通常为 90 或 198 步)
-python scripts/visualize_replay.py \
-    --data_dir data/exp_filtered \
-    --start_index 0 \
-    --num_scenarios 1 \
-    --horizon 200
+python scripts/generate_expert_data.py --data_dir data/exp_filtered --output_dir data/training_data --num_scenarios 100
 ```
 
-**观察要点**：
-*   **受控车辆 (Controlled Agents)**：控制台会显示数量（如 `Controlled agents: 2`）。这些是真正产生数据的车辆。
-*   **背景车辆**：如果在渲染图中看到其他车（通常是路边停放的），但受控数量很少，说明静态过滤生效了。
+### 2. 行为克隆 (BC)
+- **训练**：`python train_bc.py`（模型保存到 `models/bc/`，日志到 `logs/bc/`）
+- **可视化**：`python visualize_bc.py` 或 `python scripts/visualize_trained_policy.py --policy_type bc --model_path models/bc/policy_best.pt`
 
-### 数据分析
-使用 `analyze_expert_data.py` 查看生成数据的统计分布。
+### 3. 多智能体对抗模仿学习 (MAGAIL)
+- **训练**：`python train_magail.py`（模型保存到 `models/magail/`，日志到 `logs/magail/`）
+- **可视化**：`python scripts/visualize_trained_policy.py --policy_type magail --model_path models/magail/model_50_actor.pth`
 
-```bash
-python scripts/analyze_expert_data.py --data_path data/training_data/expert_data_0_100.pkl
-```
+### 4. 策略可视化统一入口
+BC 与 MAGAIL 共用 `scripts/visualize_trained_policy.py`，通过 `--policy_type bc|magail`（或根据 `--model_path` 自动推断）选择模型类型。根目录 `visualize_bc.py` 为 BC 的薄包装。详见 [scripts/README_visualize.md](scripts/README_visualize.md) 与 [scripts/README.md](scripts/README.md)。
 
----
+## 文件与模块职责
 
-## 🧠 3. 模型训练 (Next Steps)
+### 根目录脚本
+- **train_bc.py**：BC 训练，加载 `data/training_data` 下 pkl，模型与日志写入 `models/bc/`、`logs/bc/`
+- **train_magail.py**：MAGAIL 训练，环境使用 `BCScenarioEnv`（45 维），模型与日志写入 `models/magail/`、`logs/magail/`
+- **visualize_bc.py**：薄包装，调用 `scripts/visualize_trained_policy.py --policy_type bc`
 
-有了 `data/training_data/` 下的专家数据后，您可以开始训练 MAGAIL 模型。
+### Env 模块
+- **Env/bc_env.py**：`BCScenarioEnv`，45 维观测（Ego 5 维 + 10 邻居×4 维），BC 与 MAGAIL 训练/评估共用
+- **Env/scenario_env.py**：`MultiAgentScenarioEnv` 基类，Waymo 场景加载与步进
+- **Env/expert_replay_env.py**：专家轨迹回放与逆动力学动作，供 `generate_expert_data.py` 与回放可视化
+- **Env/inverse_dynamics.py**：轨迹 → 油门/转向动作
 
-### 训练流程
-1.  **加载数据**：使用 `dataset/expert_dataset.py` 中的 `ExpertDataset` 类加载 `.pkl` 数据。
-2.  **初始化 MAGAIL**：
-    *   **Generator (Policy)**: 接收观测 `(B, 45)`，输出动作 `(B, 2)`。
-    *   **Discriminator**: 接收状态-动作对 `(s, a)`，判断是专家还是生成器。
-3.  **交互采样**：
-    *   在 `MultiAgentScenarioEnv`（非回放模式）中运行 Policy。
-    *   收集 Policy 生成的轨迹。
-4.  **对抗更新**：
-    *   利用专家数据和 Policy 数据训练 Discriminator。
-    *   利用 Discriminator 的输出作为 Reward (GAIL Reward) 训练 Policy (PPO/TRPO)。
+### Algorithm 模块
+- **Algorithm/policy.py**：`StateIndependentPolicy`，BC 使用的 MLP 策略
 
-### 推荐配置
-*   **Observation**: 45维 (Ego + 10 Neighbors)
-*   **Action**: 2维 Continuous (Steering, Accel)
-*   **Horizon**: 200 steps
-*   **Batch Size**: 1024+ (多智能体环境下数据量很大)
+### scripts 目录
+工具脚本用途与用法见 [scripts/README.md](scripts/README.md)。

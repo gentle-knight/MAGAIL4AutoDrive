@@ -10,6 +10,7 @@ import signal
 import sys
 from torch.utils.data import DataLoader
 from dataset.magail_dataset import MAGAILExpertDataset
+from Env.bc_env import BCScenarioEnv
 
 # --- Networks ---
 
@@ -161,58 +162,10 @@ class PPO:
         torch.save(self.actor.state_dict(), checkpoint_path + "_actor.pth")
         torch.save(self.critic.state_dict(), checkpoint_path + "_critic.pth")
 
-from Env.scenario_env import MultiAgentScenarioEnv
-
-class MAGAILScenarioEnv(MultiAgentScenarioEnv):
-    def _get_all_obs(self):
-        # Same logic as ExpertReplayEnv to ensure compatibility
-        obs_dict = {}
-        for agent_id, vehicle in self.controlled_agents.items():
-            # 1. Ego State
-            ego_state = [
-                vehicle.position[0], vehicle.position[1],
-                vehicle.velocity[0], vehicle.velocity[1],
-                vehicle.heading_theta
-            ]
-            
-            # 2. Neighbors
-            candidates = []
-            for other_id, other_vehicle in self.engine.agent_manager.active_agents.items():
-                if other_id == agent_id:
-                    continue
-                dist = np.linalg.norm(vehicle.position - other_vehicle.position)
-                if dist < 30.0:
-                    candidates.append((dist, other_vehicle))
-            
-            candidates.sort(key=lambda x: x[0])
-            top_10 = candidates[:10]
-            
-            neighbor_feats = []
-            for _, neighbor in top_10:
-                neighbor_feats.extend([
-                    neighbor.position[0] - vehicle.position[0], 
-                    neighbor.position[1] - vehicle.position[1],
-                    neighbor.velocity[0], 
-                    neighbor.velocity[1]
-                ])
-                
-            missing = 10 - len(top_10)
-            if missing > 0:
-                neighbor_feats.extend([0.0] * (4 * missing))
-                
-            obs = np.array(ego_state + neighbor_feats, dtype=np.float32)
-            obs_dict[agent_id] = obs
-        return obs_dict
-
 # --- Training Loop ---
 
 def train(args):
-    # 1. Setup Environment (Dummy for now, usually you run simulation here)
-    # But for MAGAIL we need to collect generated trajectories.
-    # We need the Env class to be importable.
-    from Env.scenario_env import MultiAgentScenarioEnv
-    from Env.simple_idm_policy import ConstantVelocityPolicy # Just for init
-    
+    # 1. Setup Environment (45-dim obs via BCScenarioEnv)
     # Config for Env
     env_config = {
         "data_directory": args.data_dir,
@@ -255,12 +208,7 @@ def train(args):
                 yield batch
     expert_iter = cycle(expert_loader)
     
-    # 4. Initialize Env
-    from Env.expert_replay_env import ExpertReplayEnv # Using ReplayEnv for config, but we need ScenarioEnv for simulation?
-    # Actually we need MultiAgentScenarioEnv for interactive training, not Replay.
-    from Env.scenario_env import MultiAgentScenarioEnv
-    from Env.simple_idm_policy import ConstantVelocityPolicy # Placeholder policy for init
-    
+    # 4. Initialize Env (BCScenarioEnv provides 45-dim obs)
     # 2. Setup Models
     # Determine state dim from environment if possible, or use fixed
     # Expert data has 45 dim? 
@@ -316,7 +264,7 @@ def train(args):
     #             obs_dict[agent_id] = obs
     #         return obs_dict
     
-    env = MAGAILScenarioEnv(config=env_config, agent2policy={}) # Pass empty dict if we control all externally
+    env = BCScenarioEnv(env_config, agent2policy={})  # 45-dim obs
     
     print("Starting training...")
     
@@ -401,7 +349,7 @@ def train(args):
             import gc
             gc.collect()
             
-            env = MAGAILScenarioEnv(config=env_config, agent2policy={})
+            env = BCScenarioEnv(env_config, agent2policy={})
             obs_dict = env.reset(seed=seed)
         
         episode_reward = 0
@@ -575,7 +523,7 @@ def train(args):
         print(f"Episode {i_episode}: Disc Loss {disc_loss.item():.4f} | PPO Loss {ppo_loss:.4f} | Mean Reward {np.mean(all_gail_rewards):.4f}")
         
         if i_episode % 50 == 0:
-            ppo_agent.save(os.path.join(args.log_dir, f"model_{i_episode}"))
+            ppo_agent.save(os.path.join(args.save_dir, f"model_{i_episode}"))
 
     env.close()
     if writer:
@@ -588,11 +536,13 @@ if __name__ == '__main__':
     parser.add_argument("--batch_size", type=int, default=1024)
     parser.add_argument("--max_episodes", type=int, default=1000)
     parser.add_argument("--num_scenarios", type=int, default=100)
-    parser.add_argument("--log_dir", type=str, default="runs/magail_exp")
+    parser.add_argument("--log_dir", type=str, default="logs/magail", help="TensorBoard log directory")
+    parser.add_argument("--save_dir", type=str, default="models/magail", help="Directory to save model checkpoints")
     
     args = parser.parse_args()
     
-    # Create log dir
+    # Create log dir and save dir
     os.makedirs(args.log_dir, exist_ok=True)
+    os.makedirs(args.save_dir, exist_ok=True)
     
     train(args)

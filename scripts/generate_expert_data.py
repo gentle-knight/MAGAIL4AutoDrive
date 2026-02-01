@@ -153,8 +153,8 @@ def generate_data(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--data_dir", type=str, default="/home/huangfukk/MAGAIL4AutoDrive/data/exp_filtered", help="Path to Waymo pickles (or filtered index)")
-    parser.add_argument("--output_dir", type=str, default="/home/huangfukk/MAGAIL4AutoDrive/data/training", help="Output directory")
+    parser.add_argument("--data_dir", type=str, default="data/exp_filtered", help="Path to Waymo pickles (or filtered index)")
+    parser.add_argument("--output_dir", type=str, default="data/training_data", help="Output directory")
     parser.add_argument("--start_index", type=int, default=0)
     parser.add_argument("--num_scenarios", type=int, default=10)
     

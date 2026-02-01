@@ -244,6 +244,7 @@ class ExpertTrajectoryDataset(Dataset):
                 print(f"  观测维度: {obs_dim} (应为107)")
         
         if save_path:
+            os.makedirs(os.path.dirname(save_path), exist_ok=True)
             with open(save_path, "wb") as f:
                 pickle.dump({
                     "trajectories": all_trajectories,
@@ -282,7 +283,7 @@ if __name__ == "__main__":
         trajectories, observations = ExpertTrajectoryDataset.collect_with_full_obs(
             env_config,
             num_scenarios=10,
-            save_path="./expert_trajectories_full.pkl"
+            save_path="data/trajectories/expert_trajectories_full.pkl"
         )
         
         if len(trajectories) > 0:

@@ -100,6 +100,33 @@ class MultiAgentScenarioEnv(ScenarioEnv):
         for scenario_id in _obj_to_clean_this_frame:
             self.engine.traffic_manager.current_traffic_data.pop(scenario_id)
 
+        # Fix: Ensure all objects are cleared properly before reset
+        # Instead of manually clearing, we just let the engine handle it, but we might need to 
+        # ensure no stale references in managers.
+        
+        # The error "KeyError" in clear_objects usually means we are trying to clear an object 
+        # that is already gone from _spawned_objects but still tracked by a manager.
+        
+        # Try to clear only objects that actually exist in the engine
+        # existing_objects = list(self.engine.get_objects().keys())
+        # if existing_objects:
+        #      self.engine.clear_objects(existing_objects)
+        
+        # Force clear agent manager's spawned objects to avoid stale references
+        if hasattr(self.engine, 'agent_manager') and self.engine.agent_manager:
+            # Check if it's ScenarioAgentManager or VehicleAgentManager
+            # ScenarioAgentManager might not have spawned_objects directly exposed or named differently
+            # But BaseAgentManager usually has it.
+            # If it's ScenarioAgentManager, it might be using a different structure.
+            
+            # Safe clear for BaseAgentManager subclasses
+            if hasattr(self.engine.agent_manager, 'spawned_objects'):
+                self.engine.agent_manager.spawned_objects.clear()
+            
+            # Also clear active_objects if present (VehicleAgentManager uses this)
+            if hasattr(self.engine.agent_manager, '_active_objects'):
+                self.engine.agent_manager._active_objects.clear()
+                
         self.engine.reset()
         self.reset_sensors()
         self.engine.taskMgr.step()
