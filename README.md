@@ -22,12 +22,11 @@ MAGAIL4AutoDrive/
 │   ├── simple_idm_policy.py  # ConstantVelocityPolicy 占位策略
 │   └── ...
 ├── dataset/                   # 数据集加载器
-│   ├── expert_dataset.py      # 通用专家数据加载类
-│   └── magail_dataset.py      # MAGAIL 训练专用数据加载器
+│   ├── loader.py              # 主流水线：load_expert_pkl、MAGAILExpertDataset
+│   └── expert_dataset.py      # 可选 107 维/5 维管线
 ├── scripts/                   # 工具脚本（数据、回放、可视化、分析）
 │   ├── generate_expert_data.py    # 从 Waymo 生成专家 (obs, act) pkl
-│   ├── visualize_replay.py       # 原始专家数据回放
-│   ├── visualize_trained_policy.py # BC/MAGAIL 策略可视化统一入口
+│   ├── visualize.py              # 可视化统一入口（replay / policy / trajectory）
 │   ├── analyze_expert_data.py    # 数据分布分析
 │   ├── launch_tensorboard.py     # 启动 TensorBoard
 │   ├── README.md                  # 脚本用法说明
@@ -44,7 +43,6 @@ MAGAIL4AutoDrive/
 │   └── magail/
 ├── train_bc.py                # [根目录] BC 训练
 ├── train_magail.py            # [根目录] MAGAIL 训练
-├── visualize_bc.py            # [根目录] BC 可视化薄包装 -> scripts/visualize_trained_policy.py
 └── README.md
 ```
 
@@ -55,6 +53,34 @@ MAGAIL4AutoDrive/
 - **日志**：TensorBoard 写入 `logs/bc/`、`logs/magail/`
 
 所有默认路径均为相对项目根，便于在不同设备上复用。
+
+## 数据处理流程
+
+从 Waymo Motion 原始数据到本项目训练用专家 pkl，依次为：
+
+**1) 下载 Waymo Motion（TFRecord）**  
+安装 `gsutil` 并登录 Google 账号后，例如只下载 training_20s：
+
+```bash
+gsutil -m cp -r "gs://waymo_open_dataset_motion_v_1_2_0/uncompressed/scenario/training_20s" ./waymo/
+```
+
+**2) ScenarioNet Convert（TFRecord → ScenarioNet 场景库）**  
+需安装 ScenarioNet、MetaDrive 及 TensorFlow 2.11、protobuf 3.20；转换时不用 GPU。
+
+```bash
+python -m scenarionet.convert_waymo -d data/exp_converted --raw_data_path ./waymo/training_20s --num_workers 64
+```
+
+**3) ScenarioNet Filter（按需筛选场景）**  
+从 convert 得到的场景库中筛掉含红绿灯、天桥等场景，输出到如 `data/exp_filtered`。具体命令以 ScenarioNet 文档为准（Operations → Filter）。
+
+**4) 本项目：生成专家 pkl**  
+使用筛选后的场景目录，生成训练用 pkl 到 `data/training_data`：
+
+```bash
+python scripts/generate_expert_data.py --data_dir data/exp_filtered --output_dir data/training_data --num_scenarios 100 --start_index 0
+```
 
 ## 核心工作流
 
@@ -67,21 +93,20 @@ python scripts/generate_expert_data.py --data_dir data/exp_filtered --output_dir
 
 ### 2. 行为克隆 (BC)
 - **训练**：`python train_bc.py`（模型保存到 `models/bc/`，日志到 `logs/bc/`）
-- **可视化**：`python visualize_bc.py` 或 `python scripts/visualize_trained_policy.py --policy_type bc --model_path models/bc/policy_best.pt`
+- **可视化**：`python scripts/visualize.py policy --policy_type bc --model_path models/bc/policy_best.pt`
 
 ### 3. 多智能体对抗模仿学习 (MAGAIL)
 - **训练**：`python train_magail.py`（模型保存到 `models/magail/`，日志到 `logs/magail/`）
-- **可视化**：`python scripts/visualize_trained_policy.py --policy_type magail --model_path models/magail/model_50_actor.pth`
+- **可视化**：`python scripts/visualize.py policy --policy_type magail --model_path models/magail/model_50_actor.pth`
 
-### 4. 策略可视化统一入口
-BC 与 MAGAIL 共用 `scripts/visualize_trained_policy.py`，通过 `--policy_type bc|magail`（或根据 `--model_path` 自动推断）选择模型类型。根目录 `visualize_bc.py` 为 BC 的薄包装。详见 [scripts/README_visualize.md](scripts/README_visualize.md) 与 [scripts/README.md](scripts/README.md)。
+### 4. 可视化统一入口
+可视化统一使用 `scripts/visualize.py`，子命令：`replay`（场景回放）、`policy`（BC/MAGAIL 策略）、`trajectory`（专家轨迹 2D 动画）。详见 [scripts/README.md](scripts/README.md)。
 
 ## 文件与模块职责
 
 ### 根目录脚本
-- **train_bc.py**：BC 训练，加载 `data/training_data` 下 pkl，模型与日志写入 `models/bc/`、`logs/bc/`
-- **train_magail.py**：MAGAIL 训练，环境使用 `BCScenarioEnv`（45 维），模型与日志写入 `models/magail/`、`logs/magail/`
-- **visualize_bc.py**：薄包装，调用 `scripts/visualize_trained_policy.py --policy_type bc`
+- **train_bc.py**：BC 训练，从 `dataset.loader` 加载专家 pkl，模型与日志写入 `models/bc/`、`logs/bc/`
+- **train_magail.py**：MAGAIL 训练，环境使用 `BCScenarioEnv`（45 维），从 `dataset.loader` 加载专家数据，模型与日志写入 `models/magail/`、`logs/magail/`
 
 ### Env 模块
 - **Env/bc_env.py**：`BCScenarioEnv`，45 维观测（Ego 5 维 + 10 邻居×4 维），BC 与 MAGAIL 训练/评估共用

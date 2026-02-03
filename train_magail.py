@@ -9,7 +9,7 @@ import argparse
 import signal
 import sys
 from torch.utils.data import DataLoader
-from dataset.magail_dataset import MAGAILExpertDataset
+from dataset.loader import MAGAILExpertDataset
 from Env.bc_env import BCScenarioEnv
 
 # --- Networks ---

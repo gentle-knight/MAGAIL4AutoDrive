@@ -3,8 +3,6 @@ BC 训练脚本：负责数据加载、环境评估、日志与保存；BC 算�
 使用方式不变：python train_bc.py [--expert_data_path data/training_data] [--save_dir models/bc] ...
 """
 import os
-import glob
-import pickle
 import numpy as np
 import torch
 import argparse
@@ -17,45 +15,7 @@ from torch.utils.tensorboard import SummaryWriter
 from Algorithm.policy import StateIndependentPolicy
 from Algorithm.bc import train_bc_epoch, eval_bc_epoch
 from Env.bc_env import BCScenarioEnv
-
-
-def load_expert_data(expert_data_path):
-    """从目录或单个 pkl 加载专家 (obs, acts)，返回 concat 后的 obs_data, act_data."""
-    if os.path.isdir(expert_data_path):
-        pkl_files = glob.glob(os.path.join(expert_data_path, "*.pkl"))
-        if not pkl_files:
-            raise FileNotFoundError(f"No .pkl files in {expert_data_path}")
-        print(f"Found {len(pkl_files)} pickle files in {expert_data_path}")
-    elif os.path.exists(expert_data_path):
-        pkl_files = [expert_data_path]
-    else:
-        raise FileNotFoundError(f"Expert data path not found: {expert_data_path}")
-
-    obs_data, act_data = [], []
-    for pkl_file in pkl_files:
-        try:
-            with open(pkl_file, "rb") as f:
-                data = pickle.load(f)
-            if isinstance(data, list):
-                for traj in data:
-                    if "obs" in traj and "acts" in traj:
-                        obs_data.append(traj["obs"])
-                        act_data.append(traj["acts"])
-            elif isinstance(data, dict):
-                if "observations" in data and "actions" in data:
-                    obs_data.append(data["observations"])
-                    act_data.append(data["actions"])
-            else:
-                print(f"Skipping {pkl_file}: Unknown data format {type(data)}")
-        except Exception as e:
-            print(f"Error loading {pkl_file}: {e}")
-
-    if len(obs_data) == 0:
-        raise ValueError("No valid data loaded from provided path.")
-    obs_data = np.concatenate(obs_data, axis=0)
-    act_data = np.concatenate(act_data, axis=0)
-    print(f"Total loaded samples: {len(obs_data)}")
-    return obs_data, act_data
+from dataset.loader import load_expert_pkl
 
 
 def evaluate_policy(policy, args, device):
@@ -126,7 +86,7 @@ def main(args):
     print(f"TensorBoard logging to: {log_dir}")
     os.makedirs(args.save_dir, exist_ok=True)
 
-    obs_data, act_data = load_expert_data(args.expert_data_path)
+    obs_data, act_data = load_expert_pkl(args.expert_data_path)
     obs_tensor = torch.FloatTensor(obs_data)
     act_tensor = torch.FloatTensor(act_data)
     dataset = TensorDataset(obs_tensor, act_tensor)
