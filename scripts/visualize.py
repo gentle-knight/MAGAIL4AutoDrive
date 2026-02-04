@@ -177,6 +177,9 @@ def _run_policy(args):
                 continue
 
             print(f"Scenario loaded. Controlled agents: {len(obs_dict)}")
+            if len(obs_dict) == 0:
+                print(f"Scenario {i} has no controlled agents (all filtered out). Skipping.")
+                continue
             step_count = 0
             episode_reward = 0.0
 

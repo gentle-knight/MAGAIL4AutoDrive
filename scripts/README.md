@@ -35,7 +35,7 @@
 python scripts/visualize.py replay --data_dir data/exp_filtered --num_scenarios 1 --horizon 500
 ```
 
-- **policy**（BC 或 MAGAIL 训练策略）：
+- **policy**（BC 或 MAGAIL 训练策略）：与专家数据生成/回放一致——同一套车道+静态筛选、且会生成背景车（bg_*），使观测分布与训练集一致，便于在训练集上公平演示。
 ```bash
 python scripts/visualize.py policy --policy_type bc --model_path models/bc/policy_best.pt --data_dir data/exp_filtered --num_scenarios 1
 python scripts/visualize.py policy --policy_type magail --model_path models/magail/model_50_actor.pth --num_scenarios 1 --deterministic

@@ -76,28 +76,9 @@ class MultiAgentScenarioEnv(ScenarioEnv):
         if self.engine is None:
             raise ValueError("Broken MetaDrive instance.")
 
-        # 记录专家数据中每辆车的位置，接着全部清除，只保留位置等信息，用于后续生成
-        _obj_to_clean_this_frame = []
-        self.car_birth_info_list = []
-        for scenario_id, track in self.engine.traffic_manager.current_traffic_data.items():
-            if scenario_id == self.engine.traffic_manager.sdc_scenario_id:
-                continue
-            else:
-                if track["type"] == MetaDriveType.VEHICLE:
-                    _obj_to_clean_this_frame.append(scenario_id)
-                    valid = track['state']['valid']
-                    first_show = np.argmax(valid) if valid.any() else -1
-                    last_show = len(valid) - 1 - np.argmax(valid[::-1]) if valid.any() else -1
-                    # id，出现时间，出生点坐标，出生朝向，目的地
-                    self.car_birth_info_list.append({
-                        'id': track['metadata']['object_id'],
-                        'show_time': first_show,
-                        'begin': (track['state']['position'][first_show, 0], track['state']['position'][first_show, 1]),
-                        'heading': track['state']['heading'][first_show],
-                        'end': (track['state']['position'][last_show, 0], track['state']['position'][last_show, 1])
-                    })
-
-        for scenario_id in _obj_to_clean_this_frame:
+        self.background_vehicles = getattr(self, "background_vehicles", {})
+        self.car_birth_info_list, self.background_vehicles, _obj_to_clean = self._build_birth_lists_from_traffic()
+        for scenario_id in _obj_to_clean:
             self.engine.traffic_manager.current_traffic_data.pop(scenario_id)
 
         # Clear vehicles we spawned via engine.spawn_object() so _object_clean_check() passes
@@ -125,6 +106,27 @@ class MultiAgentScenarioEnv(ScenarioEnv):
         self._spawn_controlled_agents()
 
         return self._get_all_obs()
+
+    def _build_birth_lists_from_traffic(self):
+        """Build car_birth_info_list and obj_to_clean from current_traffic_data. Override for filtered (lane/static) selection."""
+        _obj_to_clean_this_frame = []
+        car_birth_info_list = []
+        for scenario_id, track in self.engine.traffic_manager.current_traffic_data.items():
+            if scenario_id == self.engine.traffic_manager.sdc_scenario_id:
+                continue
+            if track["type"] == MetaDriveType.VEHICLE:
+                _obj_to_clean_this_frame.append(scenario_id)
+                valid = track["state"]["valid"]
+                first_show = int(np.argmax(valid)) if valid.any() else -1
+                last_show = len(valid) - 1 - int(np.argmax(valid[::-1])) if valid.any() else -1
+                car_birth_info_list.append({
+                    "id": track["metadata"]["object_id"],
+                    "show_time": first_show,
+                    "begin": (track["state"]["position"][first_show, 0], track["state"]["position"][first_show, 1]),
+                    "heading": track["state"]["heading"][first_show],
+                    "end": (track["state"]["position"][last_show, 0], track["state"]["position"][last_show, 1]),
+                })
+        return car_birth_info_list, {}, _obj_to_clean_this_frame
 
     def _spawn_controlled_agents(self):
         # ego_vehicle = self.engine.agent_manager.active_agents.get("default_agent")

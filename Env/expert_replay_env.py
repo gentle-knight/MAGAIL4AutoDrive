@@ -35,132 +35,44 @@ class ExpertReplayEnv(MultiAgentScenarioEnv):
         if self.engine is None:
             raise ValueError("Broken MetaDrive instance.")
             
-        self.background_vehicles = {} # Vehicles that exist but are static/background
-        
-        # Helper function to check if a position is on a valid lane
-        def is_on_lane(pos, map_manager, threshold=2.0):
-            # Check if point is close to any lane in the road network
-            # This can be expensive if checked for every point, so we check sample points
-            # or rely on lane index if available.
-            # Waymo tracks don't have lane index, just positions.
-            # We can use map.road_network.get_closest_lane_index(pos)
-            if map_manager is None or map_manager.current_map is None:
-                return True # If no map, assume valid
-                
-            try:
-                # Use a larger search radius to catch slightly offset lanes
-                lane, lane_index = map_manager.current_map.road_network.get_closest_lane_index(pos, return_lane=True)
-                if lane is None:
-                    return False
-                
-                # Check lateral distance
-                long, lat = lane.local_coordinates(pos)
-                width = lane.width
-                # Allow being slightly off-lane (e.g. changing lanes)
-                # But parking lots are usually far from defined lanes in Waymo converted maps
-                if abs(lat) <= (width / 2 + threshold):
-                    return True
-                return False
-            except:
-                return False
-
-        # --- MODIFIED SECTION START ---
-        # Capture expert tracks before they are cleaned
+        self.background_vehicles = {}
         self.expert_tracks = {}
-        # Capture SDC track for ego replay (MetaDrive default agent)
         self.sdc_track = None
         self.sdc_vehicle = None
+
+        # 在加载新场景前，必须清除上一轮通过 spawn_object 生成的物体，否则 engine.reset() 内 _object_clean_check 会报错
+        # 从 engine 当前对象中按名称筛选（与 manager 无关的对象需在此清理），并强制销毁
+        ids_to_clear = []
+        for oid, obj in self.engine.get_objects().items():
+            name = getattr(obj, "name", None) or getattr(obj, "id", None)
+            if name and (str(name).startswith("controlled_") or str(name).startswith("bg_")):
+                ids_to_clear.append(oid)
+        if ids_to_clear:
+            self.engine.clear_objects(ids_to_clear, force_destroy=True)
+        self.controlled_agents.clear()
+        self.controlled_agent_ids.clear()
+        for aid in list(self.engine.agent_manager.active_agents.keys()):
+            if aid.startswith("bg_") or aid.startswith("controlled_"):
+                self.engine.agent_manager.active_agents.pop(aid, None)
+
         if self.replay_sdc and hasattr(self.engine, "traffic_manager"):
             sdc_sid = self.engine.traffic_manager.sdc_scenario_id
             self.sdc_track = self.engine.traffic_manager.current_traffic_data.get(sdc_sid, None)
-        _obj_to_clean_this_frame = []
-        self.car_birth_info_list = []
-        
-        # Pre-filter: Check tracks against map AND check for static vehicles
-        
-        for scenario_id, track in self.engine.traffic_manager.current_traffic_data.items():
-            if scenario_id == self.engine.traffic_manager.sdc_scenario_id:
-                continue
-            else:
-                if track["type"] == MetaDriveType.VEHICLE:
-                    _obj_to_clean_this_frame.append(scenario_id)
-                    
-                    valid = track['state']['valid']
-                    if not valid.any():
-                        continue
-                        
-                    first_show = np.argmax(valid)
-                    last_show = len(valid) - 1 - np.argmax(valid[::-1])
-                    mid_show = (first_show + last_show) // 2
-                    
-                    # 1. Lane check (existing logic)
-                    points_to_check = [first_show, mid_show, last_show]
-                    on_road_count = 0
-                    is_valid_track = True
-                    start_pos = track['state']['position'][first_show]
-                    if not is_on_lane(start_pos, self.engine.map_manager, threshold=5.0): # 5m tolerance
-                        mid_pos = track['state']['position'][mid_show]
-                        if not is_on_lane(mid_pos, self.engine.map_manager, threshold=5.0):
-                            is_valid_track = False
-                    
-                    # 2. Static check
-                    # Calculate total displacement and max speed
-                    positions = track['state']['position'][valid.astype(bool)]
-                    velocities = track['state']['velocity'][valid.astype(bool)]
-                    
-                    total_displacement = 0
-                    max_speed = 0
-                    if len(positions) > 1:
-                        total_displacement = np.linalg.norm(positions[-1] - positions[0])
-                        max_speed = np.max(np.linalg.norm(velocities, axis=1))
-                    
-                    is_static = False
-                    if total_displacement < 5.0 and max_speed < 1.0: # Relaxed threshold: <5m move and <1m/s
-                        is_static = True
-                        
-                    # Decision logic:
-                    # - If off-road AND static: Skip completely (don't even spawn as background)
-                    # - If off-road but moving: Maybe keep? Or skip? Usually off-road moving is weird, skip.
-                    # - If on-road but static: Spawn as BACKGROUND (visible but not controlled agent)
-                    # - If on-road and moving: Spawn as CONTROLLED agent
-                    
-                    if not is_valid_track:
-                        # Skip off-road vehicles entirely (both static and moving off-road)
-                        continue
-                        
-                    if is_static:
-                        # Add to background list, but NOT to car_birth_info_list (which is for controlled agents)
-                        # We need a way to spawn them. Let's add a separate list.
-                         self.background_vehicles[scenario_id] = {
-                            'id': track['metadata']['object_id'],
-                            'show_time': first_show,
-                            'begin': (track['state']['position'][first_show, 0], track['state']['position'][first_show, 1]),
-                            'heading': track['state']['heading'][first_show],
-                            'end': (track['state']['position'][last_show, 0], track['state']['position'][last_show, 1]),
-                            'scenario_id': scenario_id,
-                            'length': track['state']['length'][first_show],
-                            'width': track['state']['width'][first_show],
-                            'valid': valid # Need validity to know when to show/hide
-                        }
-                         continue # Do not add to controlled list
 
-                    # Store the full track for replay (only for controlled agents)
-                    self.expert_tracks[scenario_id] = track
-                    
-                    self.car_birth_info_list.append({
-                        'id': track['metadata']['object_id'],
-                        'show_time': first_show,
-                        'begin': (track['state']['position'][first_show, 0], track['state']['position'][first_show, 1]),
-                        'heading': track['state']['heading'][first_show],
-                        'end': (track['state']['position'][last_show, 0], track['state']['position'][last_show, 1]),
-                        'scenario_id': scenario_id, # Keep track of original ID to lookup tracks
-                        'length': track['state']['length'][first_show],
-                        'width': track['state']['width'][first_show]
-                    })
-
-        for scenario_id in _obj_to_clean_this_frame:
+        from Env.utils import filter_traffic_tracks_to_birth_lists
+        traffic_data = self.engine.traffic_manager.current_traffic_data
+        car_birth_info_list, self.background_vehicles, obj_to_clean = filter_traffic_tracks_to_birth_lists(
+            traffic_data,
+            self.engine.traffic_manager.sdc_scenario_id,
+            self.engine.map_manager,
+        )
+        for entry in car_birth_info_list:
+            sid = entry["scenario_id"]
+            if sid in traffic_data:
+                self.expert_tracks[sid] = traffic_data[sid]
+        self.car_birth_info_list = car_birth_info_list
+        for scenario_id in obj_to_clean:
             self.engine.traffic_manager.current_traffic_data.pop(scenario_id)
-        # --- MODIFIED SECTION END ---
 
         self.engine.reset()
         self.reset_sensors()
@@ -267,38 +179,6 @@ class ExpertReplayEnv(MultiAgentScenarioEnv):
         
         # Check validity for existing
         to_remove = []
-        for aid, v in self.engine.agent_manager.active_agents.items():
-            if aid.startswith("bg_"):
-                # Check validity
-                if hasattr(v, 'valid_mask'):
-                    curr_step = self.round
-                    if curr_step >= len(v.valid_mask) or not v.valid_mask[curr_step]:
-                        to_remove.append(aid)
-        
-        for aid in to_remove:
-             self.engine.agent_manager.active_agents.pop(aid, None)
-             # if aid in self.engine.obj_to_id:
-             #    self.engine.clear_objects([self.engine.obj_to_id[aid]])
-             # Instead, we should find the object by ID and clear it.
-             # Since we don't track obj directly, we can't easily clear it without obj ref.
-             # Wait, active_agents stores the vehicle object.
-             # So we can just clear that object.
-             pass 
-             
-        # Re-iterate to clear objects properly
-        for aid in to_remove:
-             # We need to find the vehicle object to clear it.
-             # But we popped it from active_agents.
-             # Wait, we should get it before pop.
-             pass
-             
-    def _update_background_vehicles(self):
-        # Remove background vehicles if they become invalid
-        # Or spawn new ones
-        self._spawn_background_vehicles()
-        
-        # Check validity for existing
-        to_remove = []
         objects_to_clear = []
         
         for aid, v in self.engine.agent_manager.active_agents.items():
@@ -314,7 +194,7 @@ class ExpertReplayEnv(MultiAgentScenarioEnv):
              self.engine.agent_manager.active_agents.pop(aid, None)
              
         if objects_to_clear:
-            self.engine.clear_objects(objects_to_clear)
+            self.engine.clear_objects([v.id for v in objects_to_clear])
 
     def _spawn_controlled_agents(self):
         for car in self.car_birth_info_list:
