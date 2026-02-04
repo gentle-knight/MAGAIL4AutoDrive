@@ -55,7 +55,7 @@ def _run_replay(args):
                 print(f"Error resetting scenario {i}: {e}")
                 continue
 
-            print(f"Scenario loaded. Controlled agents: {len(env.controlled_agents)}")
+            print(f"Scenario loaded. Controlled agents (current): {len(env.controlled_agents)}, total in scenario: {env.num_controlled_in_scenario}")
 
             for step in range(args.horizon):
                 obs, rewards, dones, infos = env.step(None)
@@ -176,7 +176,7 @@ def _run_policy(args):
                     pass
                 continue
 
-            print(f"Scenario loaded. Controlled agents: {len(obs_dict)}")
+            print(f"Scenario loaded. Controlled agents (current): {len(obs_dict)}, total in scenario: {env.num_controlled_in_scenario}")
             if len(obs_dict) == 0:
                 print(f"Scenario {i} has no controlled agents (all filtered out). Skipping.")
                 continue

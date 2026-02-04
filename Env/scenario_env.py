@@ -64,6 +64,11 @@ class MultiAgentScenarioEnv(ScenarioEnv):
         self.round = 0
         super().__init__(config)
 
+    @property
+    def num_controlled_in_scenario(self) -> int:
+        """整个场景中受控车轨迹总数（car_birth_info_list 长度），会在不同 show_time 陆续 spawn。"""
+        return len(getattr(self, "car_birth_info_list", []))
+
     def reset(self, seed: Union[None, int] = None):
         self.round = 0
         if self.logger is None:
