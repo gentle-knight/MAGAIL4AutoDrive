@@ -15,11 +15,12 @@ from torch.utils.tensorboard import SummaryWriter
 from Algorithm.policy import StateIndependentPolicy
 from Algorithm.bc import train_bc_epoch, eval_bc_epoch
 from Env.bc_env import BCScenarioEnv
-from dataset.loader import load_expert_pkl
+from dataset.loader import load_expert_pkl, get_expert_scenario_ids
 
 
 def evaluate_policy(policy, args, device):
-    """在 BCScenarioEnv 中评估策略，跑若干 episode，返回平均 reward。"""
+    """在 BCScenarioEnv 中评估策略：仅使用专家数据中出现过的 scenario_id，保证 eval 有受控车。
+    输出与 replay 对齐：agents (current)=reset 时受控车数，total in scenario=该场景受控轨迹总数（car_birth_info_list 长度）。"""
     waymo_data_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
     data_dir = os.path.join(waymo_data_dir, "exp_filtered")
     if not os.path.exists(data_dir):
@@ -28,52 +29,73 @@ def evaluate_policy(policy, args, device):
         print(f"[ERROR] Could not find scenario data in {waymo_data_dir}. Evaluation skipped.")
         return 0.0
 
-    env_config = {
-        "data_directory": data_dir,
-        "is_multi_agent": True,
-        "num_controlled_agents": 3,
-        "use_render": False,
-        "sequential_seed": True,
-        "horizon": 200,
-    }
-    env = BCScenarioEnv(env_config, agent2policy=None)
-    total_rewards = []
+    scenario_ids = get_expert_scenario_ids(args.expert_data_path, max_ids=5)
+    if not scenario_ids:
+        print("[WARN] No scenario_id in expert pkl, falling back to scenarios [0,1,2]. Eval may have 0 controlled agents.")
+        scenario_ids = [0, 1, 2]
 
-    try:
-        for i in range(3):
-            obs_dict = env.reset(seed=i)
-            episode_reward = 0
-            dones = {"__all__": False}
-            step_count = 0
-            horizon = 200
-            while not dones["__all__"]:
-                step_count += 1
-                if step_count >= horizon:
-                    break
-                if not obs_dict:
-                    obs_dict, _, dones, _ = env.step({})
-                    continue
-                agent_ids = list(obs_dict.keys())
-                obs_list = [obs_dict[aid] for aid in agent_ids]
-                obs_tensor = torch.FloatTensor(np.array(obs_list)).to(device)
-                with torch.no_grad():
-                    actions, _ = policy.sample(obs_tensor)
-                    actions = actions.cpu().numpy()
-                action_dict = {aid: act for aid, act in zip(agent_ids, actions)}
-                obs_dict, rewards, dones, _ = env.step(action_dict)
-                episode_reward += sum(rewards.values())
-            total_rewards.append(episode_reward)
-            print(f"  Eval Episode {i}: Total Reward {episode_reward:.2f}")
-        avg_reward = float(np.mean(total_rewards))
-        print(f"  Average Evaluation Reward: {avg_reward:.2f}")
-        return avg_reward
-    except Exception as e:
-        print(f"Evaluation failed: {e}")
-        import traceback
-        traceback.print_exc()
-        return 0.0
-    finally:
+    total_rewards = []
+    horizon = 200
+
+    for idx, scenario_id in enumerate(scenario_ids):
+        env_config = {
+            "data_directory": data_dir,
+            "is_multi_agent": True,
+            "num_controlled_agents": 100,
+            "use_render": False,
+            "sequential_seed": True,
+            "horizon": horizon,
+            "start_scenario_index": scenario_id,
+            "num_scenarios": 1,
+        }
+        env = BCScenarioEnv(env_config, agent2policy=None)
+        try:
+            obs_dict = env.reset(seed=scenario_id)
+        except Exception as e:
+            print(f"  Eval Episode {idx} (scenario {scenario_id}): reset failed: {e}")
+            env.close()
+            continue
+
+        n_controlled = len(env.controlled_agents)
+        n_total_in_scenario = getattr(env, "num_controlled_in_scenario", n_controlled)
+        if n_controlled == 0:
+            print(
+                f"  Eval Episode {idx} (scenario {scenario_id}): 0 controlled agents (total in scenario: {n_total_in_scenario}), skip."
+            )
+            env.close()
+            continue
+
+        episode_reward = 0.0
+        step_count = 0
+        dones = {"__all__": False}
+        while not dones["__all__"] and step_count < horizon:
+            step_count += 1
+            if not obs_dict:
+                obs_dict, _, dones, _ = env.step({})
+                continue
+            agent_ids = list(obs_dict.keys())
+            obs_list = [obs_dict[aid] for aid in agent_ids]
+            obs_tensor = torch.FloatTensor(np.array(obs_list)).to(device)
+            with torch.no_grad():
+                actions, _ = policy.sample(obs_tensor)
+                actions = actions.cpu().numpy()
+            action_dict = {aid: act for aid, act in zip(agent_ids, actions)}
+            obs_dict, rewards, dones, _ = env.step(action_dict)
+            episode_reward += sum(rewards.values())
+
+        total_rewards.append(episode_reward)
+        print(
+            f"  Eval Episode {idx} (scenario {scenario_id}): Total Reward {episode_reward:.2f}, steps {step_count}, "
+            f"agents (current): {n_controlled}, total in scenario: {n_total_in_scenario}"
+        )
         env.close()
+
+    if not total_rewards:
+        print("  No valid eval episodes (all skipped or failed).")
+        return 0.0
+    avg_reward = float(np.mean(total_rewards))
+    print(f"  Average Evaluation Reward: {avg_reward:.2f}")
+    return avg_reward
 
 
 def main(args):

@@ -51,10 +51,8 @@ class BCScenarioEnv(MultiAgentScenarioEnv):
         return car_birth_info_list, background_vehicles, obj_to_clean
 
     def _spawn_background_vehicles(self):
-        """Spawn static background vehicles so they appear in active_agents and thus in obs (same as ExpertReplayEnv)."""
+        """Spawn all static background vehicles once at reset (no show_time filter; same as ExpertReplayEnv)."""
         for sid, car in self.background_vehicles.items():
-            if car["show_time"] != self.round:
-                continue
             bg_id = f"bg_{car['id']}"
             if bg_id in self.engine.agent_manager.active_agents:
                 continue
@@ -70,24 +68,12 @@ class BCScenarioEnv(MultiAgentScenarioEnv):
             )
             v.set_velocity([0, 0])
             self.engine.agent_manager.active_agents[bg_id] = v
-            v.valid_mask = car["valid"]
-            v.start_t = car["show_time"]
+            v.valid_mask = car.get("valid")
+            v.start_t = car.get("show_time")
 
     def _update_background_vehicles(self):
-        self._spawn_background_vehicles()
-        to_remove = []
-        objects_to_clear = []
-        for aid, v in self.engine.agent_manager.active_agents.items():
-            if not aid.startswith("bg_"):
-                continue
-            if hasattr(v, "valid_mask"):
-                if self.round >= len(v.valid_mask) or not v.valid_mask[self.round]:
-                    to_remove.append(aid)
-                    objects_to_clear.append(v)
-        for aid in to_remove:
-            self.engine.agent_manager.active_agents.pop(aid, None)
-        if objects_to_clear:
-            self.engine.clear_objects([v.id for v in objects_to_clear])
+        # Static vehicles are spawned once at init and never removed.
+        pass
 
     def step(self, action_dict):
         self.round += 1

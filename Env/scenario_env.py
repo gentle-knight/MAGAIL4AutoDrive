@@ -81,6 +81,11 @@ class MultiAgentScenarioEnv(ScenarioEnv):
         if self.engine is None:
             raise ValueError("Broken MetaDrive instance.")
 
+        # 注意：_build_birth_lists_from_traffic() 在 engine.reset() 之前执行，读的是当前 engine 的
+        # current_traffic_data 与 map_manager.current_map。若复用同一 env 连续 reset(0)、reset(1)，
+        # MetaDrive 可能已按 seed 更新了 traffic 为 scenario 1，但 map 仍为 scenario 0（在 engine.reset() 才切图），
+        # 导致 is_on_lane( scenario_1 车位, scenario_0 地图 ) 全为 False → 全部 off_lane → 0 受控车。
+        # 因此多场景时应“每个 scenario 单独建 env”（start_scenario_index=i, num_scenarios=1）再 reset(seed=i)。
         self.background_vehicles = getattr(self, "background_vehicles", {})
         self.car_birth_info_list, self.background_vehicles, _obj_to_clean = self._build_birth_lists_from_traffic()
         for scenario_id in _obj_to_clean:

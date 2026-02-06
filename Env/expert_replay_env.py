@@ -97,7 +97,7 @@ class ExpertReplayEnv(MultiAgentScenarioEnv):
         # We covered most of it.
         
         self._spawn_controlled_agents()
-        self._spawn_background_vehicles() # Initial spawn for background
+        self._spawn_all_background_vehicles_at_init()
 
         # Ensure SDC/ego is moved to the correct initial expert state.
         if self.replay_sdc:
@@ -114,87 +114,33 @@ class ExpertReplayEnv(MultiAgentScenarioEnv):
         
         return self._get_all_obs()
 
-    def _spawn_background_vehicles(self):
-        # Spawn static/background vehicles
-        # Since they are static, we might just spawn them once if their show_time is 0
-        # But Waymo tracks have valid bits, they might appear/disappear.
-        # For optimization, if they are truly static (never move), we just spawn them when show_time matches.
-        
-        # We need to track spawned background vehicles to remove them if they become invalid?
-        # Since we defined them as "static", they probably stay put. 
-        # But validity might change (e.g. late spawn).
-        
-        # For simplicity in this step, let's just iterate and spawn if time matches
+    def _spawn_all_background_vehicles_at_init(self):
+        """Spawn all static background vehicles once at reset (no show_time filter; no removal by valid)."""
         for sid, car in self.background_vehicles.items():
-            if car['show_time'] == self.round:
-                # Spawn as a Traffic Vehicle (not PolicyVehicle), or just a static object?
-                # Using DefaultVehicle is fine, but don't add to controlled_agents
-                
-                # Check duplication
-                bg_id = f"bg_{car['id']}"
-                # if bg_id in self.engine.obj_to_id: # obj_to_id might not be available in all versions
-                if bg_id in self.engine.agent_manager.active_agents:
-                    continue
-                    
-                vehicle_config = {}
-                if 'length' in car and 'width' in car:
-                     vehicle_config = {
-                         "length": car['length'],
-                         "width": car['width']
-                     }
-
-                v = self.engine.spawn_object(
-                    DefaultVehicle,
-                    name=bg_id,
-                    vehicle_config=vehicle_config,
-                    position=car['begin'],
-                    heading=car['heading']
-                )
-                
-                # Set color to grey/dark to indicate background
-                v.set_velocity([0, 0])
-                # Maybe set color? MetaDrive vehicles random color.
-                # v.set_color(...) if supported
-                
-                # Register as an active object but NOT controlled agent
-                # The engine manages it. 
-                # CRITICAL: We need it in self.engine.agent_manager.active_agents for Observation?
-                # If we want it to be seen by Lidar/Observation, it needs to be an "agent" or "traffic".
-                # DefaultVehicle spawned this way is just an object.
-                # We should add it to traffic manager? Or just leave it as object?
-                # MultiAgentScenarioEnv._get_all_obs iterates self.engine.agent_manager.active_agents
-                
-                # If we want it in observation, we must add it to active_agents OR iterate over all objects.
-                # Adding to active_agents is easier for compatibility.
-                self.engine.agent_manager.active_agents[bg_id] = v
-                
-                # Store valid mask to remove it later if needed?
-                v.valid_mask = car['valid']
-                v.start_t = car['show_time']
+            bg_id = f"bg_{car['id']}"
+            if bg_id in self.engine.agent_manager.active_agents:
+                continue
+            vehicle_config = {}
+            if 'length' in car and 'width' in car:
+                vehicle_config = {
+                    "length": car['length'],
+                    "width": car['width']
+                }
+            v = self.engine.spawn_object(
+                DefaultVehicle,
+                name=bg_id,
+                vehicle_config=vehicle_config,
+                position=car['begin'],
+                heading=car['heading']
+            )
+            v.set_velocity([0, 0])
+            self.engine.agent_manager.active_agents[bg_id] = v
+            v.valid_mask = car.get('valid')
+            v.start_t = car['show_time']
 
     def _update_background_vehicles(self):
-        # Remove background vehicles if they become invalid
-        # Or spawn new ones
-        self._spawn_background_vehicles()
-        
-        # Check validity for existing
-        to_remove = []
-        objects_to_clear = []
-        
-        for aid, v in self.engine.agent_manager.active_agents.items():
-            if aid.startswith("bg_"):
-                # Check validity
-                if hasattr(v, 'valid_mask'):
-                    curr_step = self.round
-                    if curr_step >= len(v.valid_mask) or not v.valid_mask[curr_step]:
-                        to_remove.append(aid)
-                        objects_to_clear.append(v)
-        
-        for aid in to_remove:
-             self.engine.agent_manager.active_agents.pop(aid, None)
-             
-        if objects_to_clear:
-            self.engine.clear_objects([v.id for v in objects_to_clear])
+        # Static vehicles are spawned once at init and never removed (no spawn/remove by show_time or valid).
+        pass
 
     def _spawn_controlled_agents(self):
         for car in self.car_birth_info_list:

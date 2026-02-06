@@ -30,29 +30,31 @@ def _run_replay(args):
     max_available = len(summary_lookup) - args.start_index
     num_to_run = min(args.num_scenarios, max_available)
 
-    env_config = {
-        "data_directory": data_path,
-        "is_multi_agent": True,
-        "num_controlled_agents": 100,
-        "horizon": args.horizon,
-        "use_render": True,
-        "sequential_seed": True,
-        "reactive_traffic": False,
-        "start_scenario_index": args.start_index,
-        "num_scenarios": -1,
-        "log_level": 40,
-    }
-
     print(f"Initializing ExpertReplayEnv with data from {data_path}...")
-    env = ExpertReplayEnv(config=env_config)
 
     try:
         for i in range(args.start_index, args.start_index + num_to_run):
             print(f"\n--- Playing Scenario {i} ---")
+            # Each scenario uses a fresh env (start_scenario_index=i, num_scenarios=1) so the second
+            # scenario and beyond are fully cleaned and loaded like a single-scenario run.
+            env_config = {
+                "data_directory": data_path,
+                "is_multi_agent": True,
+                "num_controlled_agents": 100,
+                "horizon": args.horizon,
+                "use_render": True,
+                "sequential_seed": True,
+                "reactive_traffic": False,
+                "start_scenario_index": i,
+                "num_scenarios": 1,
+                "log_level": 40,
+            }
+            env = ExpertReplayEnv(config=env_config)
             try:
                 obs = env.reset(seed=i)
             except Exception as e:
                 print(f"Error resetting scenario {i}: {e}")
+                env.close()
                 continue
 
             print(f"Scenario loaded. Controlled agents (current): {len(env.controlled_agents)}, total in scenario: {env.num_controlled_in_scenario}")
@@ -67,6 +69,7 @@ def _run_replay(args):
                 if dones["__all__"]:
                     print(f"Scenario {i} finished at step {step}")
                     break
+            env.close()
     except KeyboardInterrupt:
         print("Interrupted by user")
     except Exception as e:
@@ -74,7 +77,6 @@ def _run_replay(args):
         traceback.print_exc()
         print(f"Global error: {e}")
     finally:
-        env.close()
         print("Environment closed.")
 
 

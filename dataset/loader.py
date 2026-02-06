@@ -49,6 +49,35 @@ def load_expert_pkl(expert_data_path):
     return obs_data, act_data
 
 
+def get_expert_scenario_ids(expert_data_path, max_ids=10):
+    """
+    从专家 pkl 中收集出现过的 scenario_id（这些场景在采集时曾有受控车）。
+    用于 eval 时只在这些场景上评估，保证 eval 有受控车。
+    返回排序后的 list，最多 max_ids 个。
+    """
+    if os.path.isdir(expert_data_path):
+        pkl_files = glob.glob(os.path.join(expert_data_path, "*.pkl"))
+    elif os.path.exists(expert_data_path):
+        pkl_files = [expert_data_path]
+    else:
+        return []
+
+    seen = set()
+    for pkl_file in pkl_files:
+        try:
+            with open(pkl_file, "rb") as f:
+                data = pickle.load(f)
+            if isinstance(data, list):
+                for traj in data:
+                    if "scenario_id" in traj:
+                        seen.add(traj["scenario_id"])
+            # dict 格式通常没有 per-trajectory scenario_id，跳过
+        except Exception:
+            continue
+    out = sorted(seen)[:max_ids]
+    return out
+
+
 class MAGAILExpertDataset(Dataset):
     def __init__(self, data_dir, transform=None):
         """
