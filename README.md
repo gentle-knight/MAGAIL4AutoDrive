@@ -93,6 +93,10 @@ python scripts/generate_expert_data.py --data_dir data/exp_filtered --output_dir
 
 ### 2. 行为克隆 (BC)
 - **训练**：`python train_bc.py`（模型保存到 `models/bc/`，日志到 `logs/bc/`）
+```
+# 注意替换文件名
+python train_bc.py --expert_data_path ./data/training/expert_data_0_50.pkl --epochs 100
+```
 - **可视化**：`python scripts/visualize.py policy --policy_type bc --model_path models/bc/policy_best.pt`
 
 ### 3. 多智能体对抗模仿学习 (MAGAIL)

@@ -88,10 +88,48 @@ class BCScenarioEnv(MultiAgentScenarioEnv):
         self._spawn_controlled_agents()
         self._update_background_vehicles()
         obs = self._get_all_obs()
-        rewards = {aid: 0.0 for aid in self.controlled_agents}
+
+        # Reward shaping for evaluation/rollout monitoring (BC training itself doesn't use env reward).
+        speed_coef = float(self.config.get("reward_speed_coef", 0.05))
+        collision_distance = float(self.config.get("collision_distance", 6.0))
+        collision_penalty = float(self.config.get("collision_penalty", 100.0))
+
+        # Pre-collect all active vehicles (includes background vehicles).
+        active_agents = list(self.engine.agent_manager.active_agents.items())
+
+        rewards = {}
+        infos = {}
+        for aid, vehicle in self.controlled_agents.items():
+            # Speed reward
+            speed = getattr(vehicle, "speed", None)
+            if speed is None:
+                speed = float(np.linalg.norm(vehicle.velocity))
+            r_speed = speed_coef * float(speed)
+
+            # Near-collision penalty (distance-based, simulator-agnostic)
+            min_dist = float("inf")
+            for other_id, other_vehicle in active_agents:
+                if other_id == aid:
+                    continue
+                try:
+                    dist = float(np.linalg.norm(vehicle.position - other_vehicle.position))
+                except Exception:
+                    continue
+                if dist < min_dist:
+                    min_dist = dist
+
+            near_collision = bool(min_dist < collision_distance)
+            r_collision = -collision_penalty if near_collision else 0.0
+
+            rewards[aid] = float(r_speed + r_collision)
+            infos[aid] = {
+                "near_collision": near_collision,
+                "min_dist": (min_dist if np.isfinite(min_dist) else None),
+                "r_speed": float(r_speed),
+                "r_collision": float(r_collision),
+            }
         dones = {aid: False for aid in self.controlled_agents}
         dones["__all__"] = self.episode_step >= self.config["horizon"]
-        infos = {aid: {} for aid in self.controlled_agents}
         return obs, rewards, dones, infos
 
     def _get_all_obs(self):

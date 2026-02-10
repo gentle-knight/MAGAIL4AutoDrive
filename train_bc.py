@@ -35,6 +35,8 @@ def evaluate_policy(policy, args, device):
         scenario_ids = [0, 1, 2]
 
     total_rewards = []
+    total_steps = []
+    collision_episodes = 0
     horizon = 200
 
     for idx, scenario_id in enumerate(scenario_ids):
@@ -67,6 +69,7 @@ def evaluate_policy(policy, args, device):
 
         episode_reward = 0.0
         step_count = 0
+        had_near_collision = False
         dones = {"__all__": False}
         while not dones["__all__"] and step_count < horizon:
             step_count += 1
@@ -80,10 +83,18 @@ def evaluate_policy(policy, args, device):
                 actions, _ = policy.sample(obs_tensor)
                 actions = actions.cpu().numpy()
             action_dict = {aid: act for aid, act in zip(agent_ids, actions)}
-            obs_dict, rewards, dones, _ = env.step(action_dict)
+            obs_dict, rewards, dones, infos = env.step(action_dict)
             episode_reward += sum(rewards.values())
+            if infos:
+                for _aid, info in infos.items():
+                    if isinstance(info, dict) and info.get("near_collision", False):
+                        had_near_collision = True
+                        break
 
         total_rewards.append(episode_reward)
+        total_steps.append(step_count)
+        if had_near_collision:
+            collision_episodes += 1
         print(
             f"  Eval Episode {idx} (scenario {scenario_id}): Total Reward {episode_reward:.2f}, steps {step_count}, "
             f"agents (current): {n_controlled}, total in scenario: {n_total_in_scenario}"
@@ -92,10 +103,15 @@ def evaluate_policy(policy, args, device):
 
     if not total_rewards:
         print("  No valid eval episodes (all skipped or failed).")
-        return 0.0
+        return 0.0, 0.0, 0.0
     avg_reward = float(np.mean(total_rewards))
-    print(f"  Average Evaluation Reward: {avg_reward:.2f}")
-    return avg_reward
+    avg_steps = float(np.mean(total_steps)) if total_steps else 0.0
+    collision_rate = float(collision_episodes / max(1, len(total_rewards)))
+    print(
+        f"  Average Evaluation Reward: {avg_reward:.2f} | Mean Episode Length: {avg_steps:.1f} | "
+        f"Collision Rate (near): {collision_rate:.3f}"
+    )
+    return avg_reward, collision_rate, avg_steps
 
 
 def main(args):
@@ -108,7 +124,10 @@ def main(args):
     print(f"TensorBoard logging to: {log_dir}")
     os.makedirs(args.save_dir, exist_ok=True)
 
-    obs_data, act_data = load_expert_pkl(args.expert_data_path)
+    obs_data, act_data = load_expert_pkl(
+        args.expert_data_path,
+        filter_terminal_last_step=args.filter_terminal_last_step,
+    )
     obs_tensor = torch.FloatTensor(obs_data)
     act_tensor = torch.FloatTensor(act_data)
     dataset = TensorDataset(obs_tensor, act_tensor)
@@ -147,9 +166,15 @@ def main(args):
             best_val_loss = avg_val_loss
             torch.save(policy.state_dict(), os.path.join(args.save_dir, "policy_best.pt"))
 
+        # Periodic checkpointing (II-style)
+        if args.checkpoint_freq > 0 and (epoch + 1) % args.checkpoint_freq == 0:
+            torch.save(policy.state_dict(), os.path.join(args.save_dir, f"policy_epoch{epoch+1}.pt"))
+
         if (epoch + 1) % args.eval_freq == 0:
-            eval_reward = evaluate_policy(policy, args, device)
+            eval_reward, eval_collision_rate, eval_mean_steps = evaluate_policy(policy, args, device)
             writer.add_scalar("Reward/eval", eval_reward, epoch)
+            writer.add_scalar("Eval/collision_rate_near", eval_collision_rate, epoch)
+            writer.add_scalar("Eval/mean_episode_length", eval_mean_steps, epoch)
 
     torch.save(policy.state_dict(), os.path.join(args.save_dir, "policy_final.pt"))
     writer.close()
@@ -164,5 +189,11 @@ if __name__ == "__main__":
     parser.add_argument("--batch_size", type=int, default=64)
     parser.add_argument("--lr", type=float, default=3e-4)
     parser.add_argument("--eval_freq", type=int, default=10)
+    parser.add_argument("--checkpoint_freq", type=int, default=50, help="Save policy_epochN.pt every N epochs. Set <=0 to disable.")
+    parser.add_argument(
+        "--filter_terminal_last_step",
+        action="store_true",
+        help="Drop the last (obs, act) pair of each trajectory to approximate training on non-terminal steps (II-style).",
+    )
     args = parser.parse_args()
     main(args)
