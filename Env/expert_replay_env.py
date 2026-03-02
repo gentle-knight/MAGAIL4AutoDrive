@@ -293,61 +293,53 @@ class ExpertReplayEnv(MultiAgentScenarioEnv):
         
         # Get observations
         obs = self._get_all_obs()
-        
-        rewards = {aid: 0.0 for aid in self.controlled_agents}
-        dones = {aid: False for aid in self.controlled_agents}
-        dones["__all__"] = (self.round >= self.config["horizon"]) or (len(self.controlled_agents) == 0 and self.round > 190) # Waymo scenarios are usually ~198 steps (20s @ 10Hz) or 90 steps (9s)
-        
-        infos = {aid: {"expert_action": expert_actions.get(aid, np.zeros(2))} for aid in self.controlled_agents}
-        
+
+        # Build rewards/dones/infos: include controlled_agents and optionally SDC for data collection
+        all_agent_ids = list(self.controlled_agents.keys())
+        if self.replay_sdc and self.sdc_vehicle is not None and self.sdc_agent_id not in all_agent_ids:
+            all_agent_ids = all_agent_ids + [self.sdc_agent_id]
+        rewards = {aid: 0.0 for aid in all_agent_ids}
+        dones = {aid: False for aid in all_agent_ids}
+        dones["__all__"] = (self.round >= self.config["horizon"]) or (len(self.controlled_agents) == 0 and self.round > 190)  # Waymo scenarios are usually ~198 steps (20s @ 10Hz) or 90 steps (9s)
+        infos = {aid: {"expert_action": expert_actions.get(aid, np.zeros(2))} for aid in all_agent_ids}
+
         return obs, rewards, dones, infos
+
+    def _obs_for_vehicle(self, vehicle, exclude_agent_id=None):
+        """Compute 45-dim obs (ego 5 + 10 neighbors x 4) for a vehicle. exclude_agent_id: do not count as neighbor."""
+        ego_state = [
+            vehicle.position[0], vehicle.position[1],
+            vehicle.velocity[0], vehicle.velocity[1],
+            vehicle.heading_theta
+        ]
+        candidates = []
+        for other_id, other_vehicle in self.engine.agent_manager.active_agents.items():
+            if other_id == exclude_agent_id:
+                continue
+            dist = np.linalg.norm(vehicle.position - other_vehicle.position)
+            if dist < 30.0:
+                candidates.append((dist, other_vehicle))
+        candidates.sort(key=lambda x: x[0])
+        top_10 = candidates[:10]
+        neighbor_feats = []
+        for _, neighbor in top_10:
+            neighbor_feats.extend([
+                neighbor.position[0] - vehicle.position[0],
+                neighbor.position[1] - vehicle.position[1],
+                neighbor.velocity[0],
+                neighbor.velocity[1]
+            ])
+        missing = 10 - len(top_10)
+        if missing > 0:
+            neighbor_feats.extend([0.0] * (4 * missing))
+        return np.array(ego_state + neighbor_feats, dtype=np.float32)
 
     def _get_all_obs(self):
         # Implement custom observation: 30m range, 10 nearest vehicles
         obs_dict = {}
-        
         for agent_id, vehicle in self.controlled_agents.items():
-            # 1. Ego State
-            ego_state = [
-                vehicle.position[0], vehicle.position[1],
-                vehicle.velocity[0], vehicle.velocity[1],
-                vehicle.heading_theta
-            ]
-            
-            # 2. Neighbors
-            neighbors = []
-            # Iterate through all vehicles in the engine
-            candidates = []
-            for other_id, other_vehicle in self.engine.agent_manager.active_agents.items():
-                if other_id == agent_id:
-                    continue
-                
-                dist = np.linalg.norm(vehicle.position - other_vehicle.position)
-                if dist < 30.0:
-                    candidates.append((dist, other_vehicle))
-            
-            # Sort by distance
-            candidates.sort(key=lambda x: x[0])
-            
-            # Take top 10
-            top_10 = candidates[:10]
-            
-            neighbor_feats = []
-            for _, neighbor in top_10:
-                neighbor_feats.extend([
-                    neighbor.position[0] - vehicle.position[0], # Relative pos
-                    neighbor.position[1] - vehicle.position[1],
-                    neighbor.velocity[0], # Absolute vel? or Relative? Usually relative in MultiAgent
-                    neighbor.velocity[1]
-                ])
-                
-            # Pad if < 10
-            missing = 10 - len(top_10)
-            if missing > 0:
-                neighbor_feats.extend([0.0] * (4 * missing))
-                
-            # Flatten
-            obs = np.array(ego_state + neighbor_feats, dtype=np.float32)
-            obs_dict[agent_id] = obs
-            
+            obs_dict[agent_id] = self._obs_for_vehicle(vehicle, exclude_agent_id=agent_id)
+        # Include SDC/ego obs for expert data collection (e.g. single-agent)
+        if self.replay_sdc and self.sdc_vehicle is not None:
+            obs_dict[self.sdc_agent_id] = self._obs_for_vehicle(self.sdc_vehicle, exclude_agent_id=self.sdc_agent_id)
         return obs_dict

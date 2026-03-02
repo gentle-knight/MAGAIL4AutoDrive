@@ -16,6 +16,7 @@ MAGAIL4AutoDrive/
 │   └── ...
 ├── Env/                       # 仿真环境封装 (MetaDrive Wrapper)
 │   ├── bc_env.py              # BCScenarioEnv，45 维观测（BC/MAGAIL 共用）
+│   ├── bc_ego_replay_env.py   # BCEgoReplayEnv，单智能体 BC 评估（仅 ego 受控）
 │   ├── scenario_env.py       # 多智能体基础场景环境
 │   ├── expert_replay_env.py  # 专家轨迹回放环境（数据生成与回放）
 │   ├── inverse_dynamics.py   # 逆动力学模块 (轨迹 -> 动作)
@@ -78,8 +79,14 @@ python -m scenarionet.convert_waymo -d data/exp_converted --raw_data_path ./waym
 **4) 本项目：生成专家 pkl**  
 使用筛选后的场景目录，生成训练用 pkl 到 `data/training_data`：
 
+- **多智能体**（所有受控车轨迹，输出 `expert_data_{start_index}_{num_scenarios}.pkl`）：
 ```bash
 python scripts/generate_expert_data.py --data_dir data/exp_filtered --output_dir data/training_data --num_scenarios 100 --start_index 0
+```
+
+- **单智能体**（仅 ego 车轨迹，输出 `expert_data_ego_{start_index}_{num_scenarios}.pkl`，用于单智能体 BC）：
+```bash
+python scripts/generate_expert_data.py --data_dir data/exp_filtered --output_dir data/training_data --num_scenarios 100 --start_index 0 --ego_only
 ```
 
 ## 核心工作流
@@ -87,17 +94,32 @@ python scripts/generate_expert_data.py --data_dir data/exp_filtered --output_dir
 ### 1. 数据准备
 使用 `scripts/generate_expert_data.py` 将 Waymo 数据转换为训练用 `.pkl`，输出到 `data/training_data/`。
 
+- **多智能体**：
 ```bash
-python scripts/generate_expert_data.py --data_dir data/exp_filtered --output_dir data/training_data --num_scenarios 100
+python scripts/generate_expert_data.py --data_dir data/exp_filtered --output_dir data/training_data --num_scenarios 100 --start_index 0
+```
+
+- **单智能体（仅 ego）**：
+```bash
+python scripts/generate_expert_data.py --data_dir data/exp_filtered --output_dir data/training_data --num_scenarios 100 --start_index 0 --ego_only
 ```
 
 ### 2. 行为克隆 (BC)
-- **训练**：`python train_bc.py`（模型保存到 `models/bc/`，日志到 `logs/bc/`）
+BC 支持两种模式：**多智能体**（默认，所有受控车共用同一策略）与 **单智能体**（仅 ego 车，评估时其他车按专家轨迹回放）。
+
+- **多智能体训练**（模型保存到 `models/bc/`，日志到 `logs/bc/`）：
+```bash
+python train_bc.py --expert_data_path data/training_data/expert_data_0_50.pkl --epochs 100
 ```
-# 注意替换文件名
-python train_bc.py --expert_data_path ./data/training/expert_data_0_50.pkl --epochs 100
+
+- **单智能体训练**（使用 ego-only 数据，评估时仅 ego 受策略控制，其他车专家回放）：
+```bash
+python train_bc.py --expert_data_path data/training_data/expert_data_ego_0_50.pkl --epochs 100 --single_agent
 ```
-- **可视化**：`python scripts/visualize.py policy --policy_type bc --model_path models/bc/policy_best.pt`
+
+- **可视化**：`python scripts/visualize.py policy --policy_type bc --model_path models/bc/policy_best.pt`  
+  仅自车用策略、其他车回放（单智能体可视化）：加 `--ego_only`，例如  
+  `python scripts/visualize.py policy --policy_type bc --model_path models/bc/policy_best.pt --ego_only --num_scenarios 1`
 
 ### 3. 多智能体对抗模仿学习 (MAGAIL)
 - **训练**：`python train_magail.py`（模型保存到 `models/magail/`，日志到 `logs/magail/`）
@@ -114,6 +136,7 @@ python train_bc.py --expert_data_path ./data/training/expert_data_0_50.pkl --epo
 
 ### Env 模块
 - **Env/bc_env.py**：`BCScenarioEnv`，45 维观测（Ego 5 维 + 10 邻居×4 维），BC 与 MAGAIL 训练/评估共用
+- **Env/bc_ego_replay_env.py**：`BCEgoReplayEnv`，单智能体 BC 评估环境，仅 ego 受策略控制，其他车按专家轨迹回放
 - **Env/scenario_env.py**：`MultiAgentScenarioEnv` 基类，Waymo 场景加载与步进
 - **Env/expert_replay_env.py**：专家轨迹回放与逆动力学动作，供 `generate_expert_data.py` 与回放可视化
 - **Env/inverse_dynamics.py**：轨迹 → 油门/转向动作

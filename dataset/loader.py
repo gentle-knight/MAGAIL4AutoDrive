@@ -10,7 +10,7 @@ import torch
 from torch.utils.data import Dataset
 
 
-def load_expert_pkl(expert_data_path, *, filter_terminal_last_step: bool = False):
+def load_expert_pkl(expert_data_path, *, filter_terminal_last_step: bool = False, agent_id_filter=None):
     """从目录或单个 pkl 加载专家 (obs, acts)，返回 concat 后的 obs_data, act_data。
 
     Args:
@@ -18,6 +18,8 @@ def load_expert_pkl(expert_data_path, *, filter_terminal_last_step: bool = False
         filter_terminal_last_step: If True, drop the last (obs, act) pair of each trajectory.
             This approximates II's \"train only on non-terminal steps\" when the dataset doesn't
             explicitly store dones.
+        agent_id_filter: If not None, only load trajectories with traj[\"agent_id\"] == agent_id_filter
+            (e.g. \"default_agent\" for single-agent/ego-only).
     """
     if os.path.isdir(expert_data_path):
         pkl_files = glob.glob(os.path.join(expert_data_path, "*.pkl"))
@@ -36,6 +38,8 @@ def load_expert_pkl(expert_data_path, *, filter_terminal_last_step: bool = False
                 data = pickle.load(f)
             if isinstance(data, list):
                 for traj in data:
+                    if agent_id_filter is not None and traj.get("agent_id") != agent_id_filter:
+                        continue
                     if "obs" in traj and "acts" in traj:
                         obs = traj["obs"]
                         acts = traj["acts"]
@@ -101,11 +105,12 @@ def get_expert_scenario_ids(expert_data_path, max_ids=10):
 
 
 class MAGAILExpertDataset(Dataset):
-    def __init__(self, data_dir, transform=None, *, filter_terminal_last_step: bool = False):
+    def __init__(self, data_dir, transform=None, *, filter_terminal_last_step: bool = False, agent_id_filter=None):
         """
         Args:
             data_dir (str): Directory containing .pkl files from generate_expert_data.py
             transform (callable, optional): Optional transform to be applied on a sample.
+            agent_id_filter: If not None, only load trajectories with traj[\"agent_id\"] == agent_id_filter.
         """
         self.data_dir = data_dir
         self.transform = transform
@@ -121,6 +126,8 @@ class MAGAILExpertDataset(Dataset):
                 with open(pkl_file, "rb") as f:
                     data = pickle.load(f)
                     # data is a list of dicts: {'obs': (T, 45), 'acts': (T, 2), ...}
+                    if agent_id_filter is not None:
+                        data = [t for t in data if t.get("agent_id") == agent_id_filter]
                     self.trajectories.extend(data)
             except Exception as e:
                 print(f"Error loading {pkl_file}: {e}")

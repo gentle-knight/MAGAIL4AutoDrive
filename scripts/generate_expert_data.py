@@ -102,7 +102,9 @@ def generate_data(args):
             
             # Post-process episode data
             for agent_id, data in episode_data.items():
-                if len(data['obs']) > 10: # Minimum length filter
+                if args.ego_only and agent_id != "default_agent":
+                    continue
+                if len(data['obs']) > 10:  # Minimum length filter
                     expert_trajectories.append({
                         'obs': np.array(data['obs']),
                         'acts': np.array(data['acts']),
@@ -120,9 +122,14 @@ def generate_data(args):
         pass
         
     # Save data
-    output_file = os.path.join(args.output_dir, f"expert_data_{args.start_index}_{args.num_scenarios}.pkl")
+    if args.ego_only:
+        output_file = os.path.join(args.output_dir, f"expert_data_ego_{args.start_index}_{args.num_scenarios}.pkl")
+    else:
+        output_file = os.path.join(args.output_dir, f"expert_data_{args.start_index}_{args.num_scenarios}.pkl")
     os.makedirs(args.output_dir, exist_ok=True)
-    
+
+    if args.ego_only:
+        print("Ego-only mode: saved trajectories are SDC (default_agent) only.")
     print(f"Saving {len(expert_trajectories)} trajectories to {output_file}")
     with open(output_file, 'wb') as f:
         pickle.dump(expert_trajectories, f)
@@ -157,6 +164,6 @@ if __name__ == "__main__":
     parser.add_argument("--output_dir", type=str, default="data/training_data", help="Output directory")
     parser.add_argument("--start_index", type=int, default=0)
     parser.add_argument("--num_scenarios", type=int, default=10)
-    
+    parser.add_argument("--ego_only", action="store_true", help="Only collect and save ego (default_agent) trajectories; output uses expert_data_ego_*.pkl prefix")
     args = parser.parse_args()
     generate_data(args)

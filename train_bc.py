@@ -15,19 +15,20 @@ from torch.utils.tensorboard import SummaryWriter
 from Algorithm.policy import StateIndependentPolicy
 from Algorithm.bc import train_bc_epoch, eval_bc_epoch
 from Env.bc_env import BCScenarioEnv
+from Env.bc_ego_replay_env import BCEgoReplayEnv
 from dataset.loader import load_expert_pkl, get_expert_scenario_ids
 
 
 def evaluate_policy(policy, args, device):
-    """在 BCScenarioEnv 中评估策略：仅使用专家数据中出现过的 scenario_id，保证 eval 有受控车。
-    输出与 replay 对齐：agents (current)=reset 时受控车数，total in scenario=该场景受控轨迹总数（car_birth_info_list 长度）。"""
+    """在 BCScenarioEnv（多智能体）或 BCEgoReplayEnv（单智能体）中评估策略。
+    仅使用专家数据中出现过的 scenario_id。单智能体模式下仅 ego 受策略控制，其他车专家回放。"""
     waymo_data_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
     data_dir = os.path.join(waymo_data_dir, "exp_filtered")
     if not os.path.exists(data_dir):
         data_dir = os.path.join(waymo_data_dir, "exp_converted")
     if not os.path.exists(data_dir):
         print(f"[ERROR] Could not find scenario data in {waymo_data_dir}. Evaluation skipped.")
-        return 0.0
+        return 0.0, 0.0, 0.0
 
     scenario_ids = get_expert_scenario_ids(args.expert_data_path, max_ids=5)
     if not scenario_ids:
@@ -38,6 +39,7 @@ def evaluate_policy(policy, args, device):
     total_steps = []
     collision_episodes = 0
     horizon = 200
+    single_agent = getattr(args, "single_agent", False)
 
     for idx, scenario_id in enumerate(scenario_ids):
         env_config = {
@@ -49,8 +51,12 @@ def evaluate_policy(policy, args, device):
             "horizon": horizon,
             "start_scenario_index": scenario_id,
             "num_scenarios": 1,
+            "log_level": 50,
         }
-        env = BCScenarioEnv(env_config, agent2policy=None)
+        if single_agent:
+            env = BCEgoReplayEnv(config=env_config)
+        else:
+            env = BCScenarioEnv(env_config, agent2policy=None)
         try:
             obs_dict = env.reset(seed=scenario_id)
         except Exception as e:
@@ -59,7 +65,7 @@ def evaluate_policy(policy, args, device):
             continue
 
         n_controlled = len(env.controlled_agents)
-        n_total_in_scenario = getattr(env, "num_controlled_in_scenario", n_controlled)
+        n_total_in_scenario = getattr(env, "num_controlled_in_scenario", n_controlled) if not single_agent else 1
         if n_controlled == 0:
             print(
                 f"  Eval Episode {idx} (scenario {scenario_id}): 0 controlled agents (total in scenario: {n_total_in_scenario}), skip."
@@ -95,9 +101,9 @@ def evaluate_policy(policy, args, device):
         total_steps.append(step_count)
         if had_near_collision:
             collision_episodes += 1
+        mode_str = "single-agent (ego)" if single_agent else f"agents (current): {n_controlled}, total in scenario: {n_total_in_scenario}"
         print(
-            f"  Eval Episode {idx} (scenario {scenario_id}): Total Reward {episode_reward:.2f}, steps {step_count}, "
-            f"agents (current): {n_controlled}, total in scenario: {n_total_in_scenario}"
+            f"  Eval Episode {idx} (scenario {scenario_id}): Total Reward {episode_reward:.2f}, steps {step_count}, {mode_str}"
         )
         env.close()
 
@@ -124,9 +130,11 @@ def main(args):
     print(f"TensorBoard logging to: {log_dir}")
     os.makedirs(args.save_dir, exist_ok=True)
 
+    agent_id_filter = "default_agent" if getattr(args, "single_agent", False) else None
     obs_data, act_data = load_expert_pkl(
         args.expert_data_path,
         filter_terminal_last_step=args.filter_terminal_last_step,
+        agent_id_filter=agent_id_filter,
     )
     obs_tensor = torch.FloatTensor(obs_data)
     act_tensor = torch.FloatTensor(act_data)
@@ -194,6 +202,11 @@ if __name__ == "__main__":
         "--filter_terminal_last_step",
         action="store_true",
         help="Drop the last (obs, act) pair of each trajectory to approximate training on non-terminal steps (II-style).",
+    )
+    parser.add_argument(
+        "--single_agent",
+        action="store_true",
+        help="Use single-agent (ego) expert data and evaluation; load only default_agent trajectories and evaluate with BCEgoReplayEnv.",
     )
     args = parser.parse_args()
     main(args)

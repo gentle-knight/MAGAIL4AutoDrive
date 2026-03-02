@@ -53,6 +53,13 @@ class MultiAgentScenarioEnv(ScenarioEnv):
             data_directory=None,
             num_controlled_agents=3,
             horizon=1000,
+            # HBBC background vehicle controls (optional)
+            enable_hbbc_background=False,
+            hbbc_model_path="models/hbbc/hbbc.pt",
+            hbbc_inference_device="cpu",
+            hbbc_latent_mode="per_vehicle_fixed",
+            hbbc_latent_json_path=None,
+            hbbc_dt=0.1,
         ))
         return config
 

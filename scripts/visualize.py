@@ -111,36 +111,49 @@ def _resolve_model_path(model_path, policy_type):
 
 def _run_policy(args):
     from Env.bc_env import BCScenarioEnv
+    from Env.bc_ego_replay_env import BCEgoReplayEnv
     from metadrive.engine.engine_utils import close_engine
 
     policy_type = (args.policy_type or "auto").lower()
     if policy_type == "auto":
         policy_type = "bc" if args.model_path.endswith(".pt") else "magail"
+    ego_only = getattr(args, "ego_only", False)
+    if ego_only and policy_type != "bc":
+        print("[WARN] --ego_only is supported for BC policy only; MAGAIL will run in multi-agent mode.")
 
     data_dir = _resolve_data_dir(args.data_dir)
     data_path = os.path.abspath(data_dir)
     env_config = {
         "data_directory": data_path,
         "is_multi_agent": True,
-        "num_controlled_agents": 3,
+        "num_controlled_agents": 100 if ego_only else 3,
         "horizon": args.horizon,
         "use_render": True,
         "sequential_seed": True,
         "start_scenario_index": args.start_index,
         "num_scenarios": args.num_scenarios,
         "log_level": 40,
+        "enable_hbbc_background": bool(getattr(args, "enable_hbbc_background", False)),
+        "hbbc_model_path": getattr(args, "hbbc_model_path", "models/hbbc/hbbc.pt"),
+        "hbbc_inference_device": getattr(args, "hbbc_inference_device", "cpu"),
+        "hbbc_latent_mode": getattr(args, "hbbc_latent_mode", "per_vehicle_fixed"),
+        "hbbc_latent_json_path": getattr(args, "hbbc_latent_json_path", None),
     }
 
-    print(f"Initializing BCScenarioEnv (policy_type={policy_type})...")
+    if ego_only and policy_type == "bc":
+        print("Initializing BCEgoReplayEnv (ego-only: policy on self, others replayed)...")
+    else:
+        print(f"Initializing BCScenarioEnv (policy_type={policy_type})...")
+
     try:
-        env = BCScenarioEnv(env_config, agent2policy={})
+        env = BCEgoReplayEnv(config=env_config) if (ego_only and policy_type == "bc") else BCScenarioEnv(env_config, agent2policy={})
     except Exception as e:
         print(f"Error init env: {e}. Trying to close lingering engine...")
         try:
             close_engine()
         except Exception:
             pass
-        env = BCScenarioEnv(env_config, agent2policy={})
+        env = BCEgoReplayEnv(config=env_config) if (ego_only and policy_type == "bc") else BCScenarioEnv(env_config, agent2policy={})
 
     state_dim = 45
     action_dim = 2
@@ -156,7 +169,11 @@ def _run_policy(args):
             hidden_units=(256, 256),
             hidden_activation=torch.nn.Tanh(),
         ).to(device)
-        policy.load_state_dict(torch.load(model_path, map_location=device))
+        try:
+            state = torch.load(model_path, map_location=device, weights_only=True)
+        except TypeError:
+            state = torch.load(model_path, map_location=device)
+        policy.load_state_dict(state)
         policy.eval()
     else:
         from train_magail import Actor
@@ -178,7 +195,16 @@ def _run_policy(args):
                     pass
                 continue
 
-            print(f"Scenario loaded. Controlled agents (current): {len(obs_dict)}, total in scenario: {env.num_controlled_in_scenario}")
+            n_total = getattr(env, "num_controlled_in_scenario", len(obs_dict))
+            mode_note = " (ego only, others replayed)" if (ego_only and policy_type == "bc") else ""
+            if ego_only and policy_type == "bc" and bool(env_config.get("enable_hbbc_background", False)):
+                mode_note = " (ego only, dynamic background via HBBC)"
+            print(f"Scenario loaded. Controlled agents (current): {len(obs_dict)}, total in scenario: {n_total}{mode_note}")
+            if ego_only and policy_type == "bc" and len(obs_dict) == 1:
+                if bool(env_config.get("enable_hbbc_background", False)):
+                    print("  [Ego control: policy injected — dynamic background vehicles use HBBC; static background stays static.]")
+                else:
+                    print("  [Ego control: policy injected — ego uses model output each step; other vehicles expert replay.]")
             if len(obs_dict) == 0:
                 print(f"Scenario {i} has no controlled agents (all filtered out). Skipping.")
                 continue
@@ -370,6 +396,12 @@ def main():
     pp.add_argument("--policy_type", type=str, default="auto", choices=["auto", "bc", "magail"])
     pp.add_argument("--model_path", type=str, default="models/bc/policy_best.pt")
     pp.add_argument("--deterministic", action="store_true", help="MAGAIL: use mean action")
+    pp.add_argument("--ego_only", action="store_true", help="BC only: inject policy into ego only; other vehicles use expert replay")
+    pp.add_argument("--enable_hbbc_background", action="store_true", help="Enable HBBC policy for dynamic background vehicles")
+    pp.add_argument("--hbbc_model_path", type=str, default="models/hbbc/hbbc.pt")
+    pp.add_argument("--hbbc_inference_device", type=str, default="cpu")
+    pp.add_argument("--hbbc_latent_mode", type=str, default="per_vehicle_fixed", choices=["per_vehicle_fixed", "per_episode_reset"])
+    pp.add_argument("--hbbc_latent_json_path", type=str, default=None, help="Optional JSON for per-vehicle latent override")
 
     # trajectory
     pt = subparsers.add_parser("trajectory", help="2D matplotlib animation of expert trajectories")

@@ -61,5 +61,33 @@ class InverseDynamics:
         # Normalize actions to [-1, 1]
         norm_acc = np.clip(acc / self.max_acc, -1.0, 1.0)
         norm_steering = np.clip(steering / self.max_steering, -1.0, 1.0)
-        
+
         return np.array([norm_steering, norm_acc]), {'raw_acc': acc, 'raw_steering': steering}
+
+    def apply_action(self, current_state, action, dt=0.1):
+        """
+        Forward dynamics: given current_state and action [steering, acc] in [-1, 1], return next_state.
+        State format: dict with position (x,y), heading, velocity (vx, vy).
+        """
+        steering_norm, acc_norm = float(action[0]), float(action[1])
+        acc = acc_norm * self.max_acc
+        steering = steering_norm * self.max_steering
+        pos = np.array(current_state['position'][:2], dtype=np.float64)
+        heading = float(current_state['heading'])
+        vel = np.array(current_state['velocity'], dtype=np.float64)
+        v = np.linalg.norm(vel)
+        if v < 0.1:
+            v = 0.1
+        theta_dot = v * np.tan(steering) / self.wheelbase
+        v_next = v + acc * dt
+        v_next = max(0.0, v_next)
+        heading_next = heading + theta_dot * dt
+        heading_next = np.arctan2(np.sin(heading_next), np.cos(heading_next))
+        vx_next = v_next * np.cos(heading_next)
+        vy_next = v_next * np.sin(heading_next)
+        pos_next = pos + dt * np.array([vx_next, vy_next])
+        return {
+            'position': pos_next,
+            'heading': heading_next,
+            'velocity': np.array([vx_next, vy_next]),
+        }
